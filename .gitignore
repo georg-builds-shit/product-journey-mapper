@@ -4,6 +4,6 @@ node_modules/
 .env.local
 .env.production.local
 .vercel/
-.claude/worktrees/
+.claude/
 *.log
 .DS_Store
