@@ -1,0 +1,9 @@
+node_modules/
+.next/
+.env
+.env.local
+.env.production.local
+.vercel/
+.claude/worktrees/
+*.log
+.DS_Store
