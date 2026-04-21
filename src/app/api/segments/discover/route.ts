@@ -3,8 +3,8 @@ import { db } from "@/db";
 import { profileCache, accounts } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { fetchMetrics, fetchLists, fetchKlaviyoSegments } from "@/lib/klaviyo";
-import { decrypt } from "@/lib/crypto";
 import { requireAuth } from "@/lib/auth";
+import { getFreshAccessToken } from "@/lib/klaviyo-auth";
 
 export async function GET(request: NextRequest) {
   const authError = requireAuth(request);
@@ -55,7 +55,8 @@ export async function GET(request: NextRequest) {
     const isDemoAccount = account?.email === "demo@productjourneymapper.com";
 
     if (account && !isDemoAccount) {
-      const accessToken = decrypt(account.klaviyoAccessToken);
+      // getFreshAccessToken refreshes if expired + persists the new token
+      const { accessToken } = await getFreshAccessToken(accountId);
       [availableMetrics, availableLists, availableKlaviyoSegments] = await Promise.all([
         fetchMetrics(accessToken),
         fetchLists(accessToken),

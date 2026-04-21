@@ -4,8 +4,8 @@ import { accounts, events, profileCache } from "@/db/schema";
 import { eq, and, inArray, sql } from "drizzle-orm";
 import { requireAuth } from "@/lib/auth";
 import { getBrandConfig, UNASSIGNED_CHANNEL_ID } from "@/lib/config";
-import { decrypt } from "@/lib/crypto";
 import { fetchListOrSegmentProfileIds } from "@/lib/klaviyo";
+import { getFreshAccessToken } from "@/lib/klaviyo-auth";
 import { classifyChannels } from "@/lib/channel-classify";
 
 /**
@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
   try {
     const [account] = await db.select().from(accounts).where(eq(accounts.id, accountId));
     if (account && account.email !== "demo@productjourneymapper.com") {
-      const accessToken = decrypt(account.klaviyoAccessToken);
+      const { accessToken } = await getFreshAccessToken(accountId);
       for (const ch of config.channels) {
         if (ch.rule.type === "list") {
           const memberIds = await fetchListOrSegmentProfileIds(accessToken, "lists", ch.rule.listId);
