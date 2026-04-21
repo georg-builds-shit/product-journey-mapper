@@ -16,11 +16,12 @@ export const analyzeJourney = inngest.createFunction(
     event: {
       data: {
         accountId: string;
+        runId: string;
         filters?: AnalysisFilters;
       };
     };
   }) => {
-    const { accountId, filters } = event.data;
+    const { accountId, runId, filters } = event.data;
 
     // Refresh-aware token fetch — shared with /api/segments/discover and
     // /api/config/sanity-check so all Klaviyo-calling paths get a fresh token.
@@ -29,8 +30,8 @@ export const analyzeJourney = inngest.createFunction(
     // Step 1: Incremental sync — pull only new events from Klaviyo
     const syncResult = await syncEvents(accountId, accessToken);
 
-    // Step 2: Analyze from local DB (no more Klaviyo API calls)
-    const runId = await runJourneyAnalysis(accountId, accessToken, filters);
+    // Step 2: Analyze the pre-created run row from the POST /api/analyze handler
+    await runJourneyAnalysis(accountId, accessToken, runId, filters);
     return { runId, sync: syncResult };
   }
 );

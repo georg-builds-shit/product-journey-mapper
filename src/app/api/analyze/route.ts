@@ -117,13 +117,32 @@ export async function POST(request: NextRequest) {
   if (dateTo) filters.dateTo = dateTo;
   if (segmentId) filters.segmentId = segmentId;
 
+  // Create the run row synchronously so the client gets a runId it can poll.
+  // Without this the status endpoint has no way to distinguish "new run queued"
+  // from "previous run already complete" and the dashboard shows stale data.
+  const [run] = await db
+    .insert(analysisRuns)
+    .values({
+      accountId: account.id,
+      status: "pending",
+      filterDateFrom,
+      filterDateTo,
+      segmentId: segmentId || null,
+    })
+    .returning();
+
   await inngest.send({
     name: "journey/analyze",
     data: {
       accountId: account.id,
+      runId: run.id,
       filters: Object.keys(filters).length > 0 ? filters : undefined,
     },
   });
 
-  return NextResponse.json({ status: "started", accountId: account.id });
+  return NextResponse.json({
+    status: "started",
+    accountId: account.id,
+    runId: run.id,
+  });
 }

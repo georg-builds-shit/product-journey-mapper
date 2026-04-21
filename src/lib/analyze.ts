@@ -46,10 +46,17 @@ export interface AnalysisFilters {
 /**
  * Run journey analysis using locally cached events (from the events table).
  * No Klaviyo API calls happen here — sync.ts handles that separately.
+ *
+ * `runId` must be an existing analysis_runs row created by /api/analyze
+ * before the Inngest event was dispatched. Passing the id in (instead of
+ * inserting here) means the client gets the row's id synchronously at
+ * POST time and can poll it reliably — otherwise the status endpoint
+ * has no way to distinguish the new run from a previously-completed one.
  */
 export async function runJourneyAnalysis(
   accountId: string,
   accessToken: string,
+  runId: string,
   filters?: AnalysisFilters
 ) {
   // Load segment definition if provided
@@ -67,17 +74,16 @@ export async function runJourneyAnalysis(
     }
   }
 
-  // Create analysis run with filter metadata
+  // Adopt the pre-created run row and flip its status to "analyzing"
   const [run] = await db
-    .insert(analysisRuns)
-    .values({
-      accountId,
-      status: "analyzing",
-      filterDateFrom: filters?.dateFrom ? new Date(filters.dateFrom) : null,
-      filterDateTo: filters?.dateTo ? new Date(filters.dateTo) : null,
-      segmentId: filters?.segmentId || null,
-    })
+    .update(analysisRuns)
+    .set({ status: "analyzing" })
+    .where(eq(analysisRuns.id, runId))
     .returning();
+
+  if (!run) {
+    throw new Error(`Analysis run ${runId} not found`);
+  }
 
   try {
     // ── Read events from local DB (no Klaviyo API calls) ──

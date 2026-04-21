@@ -238,11 +238,16 @@ function exportCsv(accountId: string | null, metric: string, audienceId: string)
   window.open(`/api/export?${params.toString()}`, "_blank");
 }
 
-/** Helper: call /api/analyze, return runId if cached, else null */
+/**
+ * POST /api/analyze. Returns { runId, cached } — cached=true when the server
+ * returned a complete run with a matching config signature (no new job
+ * fired). cached=false means a new run row was created and an Inngest job
+ * queued; poll the returned runId for status.
+ */
 async function requestAnalysis(
   accountId: string,
   filters?: { dateFrom?: string; dateTo?: string; segmentId?: string }
-): Promise<string | null> {
+): Promise<{ runId: string; cached: boolean }> {
   const res = await fetch("/api/analyze", {
     method: "POST",
     headers: apiHeaders({ "Content-Type": "application/json" }),
@@ -254,19 +259,20 @@ async function requestAnalysis(
     }),
   });
   const result = await res.json();
-  return result.status === "cached" ? result.runId : null;
+  if (!result.runId) {
+    throw new Error(result.error || "Analyze request returned no runId");
+  }
+  return { runId: result.runId, cached: result.status === "cached" };
 }
 
-/** Helper: poll /api/analyze/status until complete, return runId */
+/** Poll /api/analyze/status?runId=X until the specific run is complete. */
 function pollUntilComplete(
   accountId: string,
-  segmentId?: string,
+  runId: string,
   onStatus?: (s: AnalysisStatus) => void
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const params = new URLSearchParams({ accountId });
-    if (segmentId) params.set("segmentId", segmentId);
-    const url = `/api/analyze/status?${params}`;
+    const url = `/api/analyze/status?accountId=${accountId}&runId=${runId}`;
 
     const interval = setInterval(async () => {
       try {
@@ -346,32 +352,30 @@ function DashboardContent() {
       if (!filters?.compareSegmentId) setCompareData(null);
 
       // ── Run primary analysis ──
-      const primaryCached = await requestAnalysis(accountId, {
+      const primary = await requestAnalysis(accountId, {
         dateFrom: filters?.dateFrom,
         dateTo: filters?.dateTo,
         segmentId: filters?.segmentId,
       });
 
-      let primaryRunId = primaryCached;
-      if (!primaryRunId) {
-        primaryRunId = await pollUntilComplete(accountId, filters?.segmentId, setStatus);
-      }
+      const primaryRunId = primary.cached
+        ? primary.runId
+        : await pollUntilComplete(accountId, primary.runId, setStatus);
 
       const primaryData = await fetchDashboardData(primaryRunId);
       setData(primaryData);
 
       // ── Run comparison analysis (if requested) ──
       if (filters?.compareSegmentId) {
-        const compareCached = await requestAnalysis(accountId, {
+        const compare = await requestAnalysis(accountId, {
           dateFrom: filters?.dateFrom,
           dateTo: filters?.dateTo,
           segmentId: filters.compareSegmentId,
         });
 
-        let compareRunId = compareCached;
-        if (!compareRunId) {
-          compareRunId = await pollUntilComplete(accountId, filters.compareSegmentId);
-        }
+        const compareRunId = compare.cached
+          ? compare.runId
+          : await pollUntilComplete(accountId, compare.runId);
 
         const cData = await fetchDashboardData(compareRunId);
         setCompareData(cData);
