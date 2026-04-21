@@ -175,7 +175,8 @@ function SettingsContent() {
     updateConfig({
       audiences: [
         ...config.audiences,
-        { id, label: "New audience", rule: { type: "list", listId: "" } },
+        // Empty label — will auto-fill from the picked segment/list name.
+        { id, label: "", rule: { type: "list", listId: "" } },
       ],
     });
   };
@@ -524,6 +525,15 @@ function AudienceRow({
 }) {
   const ruleType = audience.rule.type;
 
+  // Auto-fill the label from the Klaviyo source's name when the user hasn't
+  // typed a custom one. Empty or the legacy default "New audience" both count
+  // as "hasn't typed anything meaningful yet."
+  const labelIsDefault = !audience.label.trim() || audience.label === "New audience";
+
+  const applyAutoLabel = (newLabel: string, patch: Partial<AudienceDefinition>) => {
+    onChange(labelIsDefault ? { ...patch, label: newLabel } : patch);
+  };
+
   const setRuleType = (type: AudienceRule["type"]) => {
     if (type === "list") onChange({ rule: { type: "list", listId: "" } });
     else if (type === "klaviyo_segment") onChange({ rule: { type: "klaviyo_segment", segmentId: "" } });
@@ -558,7 +568,7 @@ function AudienceRow({
           type="text"
           value={audience.label}
           onChange={(e) => onChange({ label: e.target.value })}
-          placeholder="Label (e.g. DTC, Affiliate)"
+          placeholder="Label (auto-fills from Klaviyo name)"
           className="flex-1 px-3 py-1.5 text-sm font-medium rounded border border-[var(--card-border)] bg-[var(--background)] focus:outline-none focus:border-[var(--accent)]"
         />
         <input
@@ -600,7 +610,13 @@ function AudienceRow({
       {ruleType === "list" && (
         <select
           value={audience.rule.listId || ""}
-          onChange={(e) => onChange({ rule: { type: "list", listId: e.target.value } })}
+          onChange={(e) => {
+            const listId = e.target.value;
+            const found = discovery?.lists.find((l) => l.id === listId);
+            applyAutoLabel(found?.name ?? "", {
+              rule: { type: "list", listId },
+            });
+          }}
           className="w-full px-3 py-2 text-sm rounded border border-[var(--card-border)] bg-[var(--background)] focus:outline-none focus:border-[var(--accent)]"
         >
           <option value="">Select a list…</option>
@@ -619,9 +635,13 @@ function AudienceRow({
       {ruleType === "klaviyo_segment" && (
         <select
           value={audience.rule.segmentId || ""}
-          onChange={(e) =>
-            onChange({ rule: { type: "klaviyo_segment", segmentId: e.target.value } })
-          }
+          onChange={(e) => {
+            const segmentId = e.target.value;
+            const found = discovery?.klaviyoSegments.find((s) => s.id === segmentId);
+            applyAutoLabel(found?.name ?? "", {
+              rule: { type: "klaviyo_segment", segmentId },
+            });
+          }}
           className="w-full px-3 py-2 text-sm rounded border border-[var(--card-border)] bg-[var(--background)] focus:outline-none focus:border-[var(--accent)]"
         >
           <option value="">Select a segment…</option>

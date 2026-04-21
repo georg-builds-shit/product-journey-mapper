@@ -485,12 +485,19 @@ async function fetchSegmentProfileCount(accessToken: string, segmentId: string):
   }
 }
 
-// Fetch profile IDs belonging to a specific list or segment
+// Fetch profile IDs belonging to a specific list or segment.
+//
+// Previous default of maxPages=100 (× 100 profiles/page = 10K cap) was
+// silently truncating large segments — a 40K-member DTC segment lost 75%
+// of its members, classifying them as "unassigned" downstream. Default
+// bumped to 5000 pages (500K profiles) which covers every realistic brand.
+// Pagination is serial via the cursor, so we don't stampede the rate limit;
+// fetchWithRetry handles occasional 429s.
 export async function fetchListOrSegmentProfileIds(
   accessToken: string,
   type: "lists" | "segments",
   id: string,
-  maxPages = 100
+  maxPages = 5000
 ): Promise<string[]> {
   const profileIds: string[] = [];
   let nextUrl: string | null = `https://a.klaviyo.com/api/${type}/${id}/profiles/?page[size]=100`;
@@ -512,6 +519,12 @@ export async function fetchListOrSegmentProfileIds(
     }
     nextUrl = body.links?.next || null;
     pageCount++;
+  }
+
+  if (pageCount >= maxPages) {
+    console.warn(
+      `fetchListOrSegmentProfileIds(${type}=${id}) hit maxPages=${maxPages} (${profileIds.length} ids fetched). Some members may be missing from classification.`
+    );
   }
 
   return profileIds;
