@@ -258,6 +258,7 @@ export async function fetchOrderedProductEvents(
           e.attributes.event_properties?.SKU ||
           e.attributes.event_properties?.sku ||
           null,
+        discountCode: extractDiscountCode(e.attributes.event_properties),
       }))
     );
 
@@ -429,6 +430,38 @@ export async function fetchListOrSegmentProfileIds(
   return profileIds;
 }
 
+// Extract a discount code from event_properties using the same fallback-chain
+// pattern as other fields. Returns null when none of the known shapes produce
+// a non-empty string. Handles both direct code fields and Shopify's
+// discount_codes[] array shape.
+function extractDiscountCode(props: any): string | null {
+  if (!props) return null;
+  const direct =
+    props.DiscountCode ||
+    props.discount_code ||
+    props["Discount Code"] ||
+    props.PromoCode ||
+    props.promo_code ||
+    props["Promo Code"] ||
+    props.coupon ||
+    props.Coupon ||
+    null;
+  if (direct && typeof direct === "string" && direct.trim()) return direct.trim();
+
+  // Shopify-style: discount_codes is an array of { code, amount, type }
+  const arr = props.discount_codes || props.DiscountCodes || props.discounts;
+  if (Array.isArray(arr) && arr.length > 0) {
+    const first = arr[0];
+    if (typeof first === "string" && first.trim()) return first.trim();
+    if (first && typeof first === "object") {
+      const code = first.code || first.Code || first.title || first.name;
+      if (code && typeof code === "string" && code.trim()) return code.trim();
+    }
+  }
+
+  return null;
+}
+
 // Types
 export interface OrderedProductEvent {
   id: string;
@@ -443,4 +476,5 @@ export interface OrderedProductEvent {
   quantity: number;
   orderId: string | null;
   sku: string | null;
+  discountCode: string | null;
 }

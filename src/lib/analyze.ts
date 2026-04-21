@@ -25,9 +25,17 @@ import {
 import { generateJourneyInsights } from "./insights";
 import {
   filterEventsByProfileSegment,
+  profileMatchesSegment,
   type SegmentRule,
 } from "./segment-eval";
 import type { OrderedProductEvent } from "./klaviyo";
+import { getBrandConfig } from "./config";
+import {
+  classifyChannels,
+  classifyAllMatches,
+  collectMembershipRefs,
+} from "./channel-classify";
+import { computeCohortAnalytics } from "./cohort-analysis";
 
 export interface AnalysisFilters {
   dateFrom?: string; // YYYY-MM-DD
@@ -104,6 +112,7 @@ export async function runJourneyAnalysis(
       quantity: e.quantity || 1,
       orderId: e.orderId || null,
       sku: e.sku || null,
+      discountCode: e.discountCode || null,
     }));
 
     // Apply profile segment filter if applicable
@@ -296,6 +305,149 @@ export async function runJourneyAnalysis(
     const productAffinity = calculateProductAffinity(sequences);
     const customerJourneys = buildCustomerJourneys(sequences);
 
+    // ── Cohort & repeat-purchase analytics (channel-splittable) ──
+    // Runs alongside existing metrics so the dashboard response stays a
+    // single run. Failures here should not lose the rest of the analysis.
+    let cohortAnalytics: any = null;
+    let channelsSnapshot: any = null;
+    let configSnapshot: any = null;
+    try {
+      const config = await getBrandConfig(accountId);
+      channelsSnapshot = config.channels;
+      configSnapshot = {
+        cohortGranularity: config.cohortGranularity,
+        lookbackMonths: config.lookbackMonths,
+        excludeRefunds: config.excludeRefunds,
+        minOrderValue: config.minOrderValue,
+        excludeTestRules: config.excludeTestRules,
+        productGroupings: config.productGroupings,
+      };
+
+      // Apply order-level filters: min value + refunds (if excludeRefunds, drop value<=0)
+      let filteredEvents: OrderedProductEvent[] = eventList.filter((e) => {
+        if (config.excludeRefunds && (e.value || 0) <= 0) return false;
+        if ((e.value || 0) < config.minOrderValue) return false;
+        return true;
+      });
+
+      // Build profile data index for channel classification (+ test-order rules)
+      const uniqueProfileIds = [
+        ...new Set(filteredEvents.map((e) => e.profileId)),
+      ];
+
+      const profileDataMap = new Map<
+        string,
+        {
+          id: string;
+          properties: Record<string, any>;
+          location: Record<string, any>;
+          listIds: string[];
+          segmentIds: string[];
+        }
+      >();
+
+      if (uniqueProfileIds.length > 0) {
+        const cached = await db
+          .select()
+          .from(profileCache)
+          .where(
+            and(
+              eq(profileCache.accountId, accountId),
+              inArray(profileCache.klaviyoProfileId, uniqueProfileIds)
+            )
+          );
+        for (const p of cached) {
+          profileDataMap.set(p.klaviyoProfileId, {
+            id: p.klaviyoProfileId,
+            properties: (p.properties as Record<string, any>) || {},
+            location: (p.location as Record<string, any>) || {},
+            listIds: (p.listIds as string[]) || [],
+            segmentIds: (p.segmentIds as string[]) || [],
+          });
+        }
+      }
+
+      // Fetch list/segment membership for every channel rule + test-rule reference.
+      const channelRefs = collectMembershipRefs(config.channels);
+      const testRefs = collectMembershipRefs([
+        {
+          id: "__test__",
+          label: "__test__",
+          rule: { type: "segment", rules: config.excludeTestRules },
+        },
+      ]);
+      const allListIds = Array.from(
+        new Set([...channelRefs.listIds, ...testRefs.listIds])
+      );
+      const allSegmentIds = Array.from(
+        new Set([...channelRefs.segmentIds, ...testRefs.segmentIds])
+      );
+
+      for (const listId of allListIds) {
+        try {
+          const memberIds = await fetchListOrSegmentProfileIds(accessToken, "lists", listId);
+          const memberSet = new Set(memberIds);
+          for (const pid of memberSet) {
+            const p = profileDataMap.get(pid);
+            if (p && !p.listIds.includes(listId)) p.listIds.push(listId);
+          }
+        } catch (err) {
+          console.error(`List membership fetch failed for ${listId}:`, err);
+        }
+      }
+      for (const segId of allSegmentIds) {
+        try {
+          const memberIds = await fetchListOrSegmentProfileIds(accessToken, "segments", segId);
+          const memberSet = new Set(memberIds);
+          for (const pid of memberSet) {
+            const p = profileDataMap.get(pid);
+            if (p && !p.segmentIds.includes(segId)) p.segmentIds.push(segId);
+          }
+        } catch (err) {
+          console.error(`Segment membership fetch failed for ${segId}:`, err);
+        }
+      }
+
+      const profiles = Array.from(profileDataMap.values());
+
+      // Apply test-order exclusion: drop events from any profile matching the rules.
+      if (config.excludeTestRules.length > 0) {
+        const excluded = new Set<string>();
+        for (const p of profiles) {
+          if (
+            profileMatchesSegment(
+              {
+                id: p.id,
+                properties: p.properties,
+                location: p.location,
+                listIds: p.listIds,
+                segmentIds: p.segmentIds,
+              },
+              config.excludeTestRules
+            )
+          ) {
+            excluded.add(p.id);
+          }
+        }
+        filteredEvents = filteredEvents.filter((e) => !excluded.has(e.profileId));
+      }
+
+      const channelMap = classifyChannels(profiles, config.channels);
+      const allMatchesMap = classifyAllMatches(profiles, config.channels);
+
+      cohortAnalytics = computeCohortAnalytics({
+        events: filteredEvents,
+        channelMap,
+        allMatchesMap,
+        channels: config.channels,
+        granularity: config.cohortGranularity,
+        grouping: config.productGroupings,
+      });
+    } catch (err) {
+      console.error("Cohort analytics computation failed:", err);
+      cohortAnalytics = null;
+    }
+
     // Generate AI insights (non-fatal — don't lose all data if Claude API fails)
     let insights: string;
     try {
@@ -319,6 +471,9 @@ export async function runJourneyAnalysis(
         cohortRetentionJson: cohortRetention,
         productAffinityJson: productAffinity,
         customerJourneysJson: customerJourneys,
+        cohortAnalyticsJson: cohortAnalytics,
+        channelsSnapshotJson: channelsSnapshot,
+        configSnapshotJson: configSnapshot,
         completedAt: new Date(),
       })
       .where(eq(analysisRuns.id, run.id));

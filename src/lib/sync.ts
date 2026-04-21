@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { events, syncRuns, profileCache } from "@/db/schema";
-import { eq, and, desc, count, sql } from "drizzle-orm";
+import { eq, and, desc, count, sql, min } from "drizzle-orm";
 import {
   fetchMetrics,
   fetchEventsByMetricIds,
@@ -10,13 +10,23 @@ import {
   fetchListOrSegmentProfileIds,
   type OrderedProductEvent,
 } from "./klaviyo";
+import { getBrandConfig } from "./config";
 
 export interface SyncResult {
   newEvents: number;
   totalEvents: number;
   profilesSynced: number;
   syncRunId: string;
+  backfillEvents: number;
 }
+
+// Default lookback if no brand_config exists yet (first sync ever). Matches
+// the module's configurable default.
+const DEFAULT_LOOKBACK_MONTHS = 24;
+// Max pages per fetch — increased from the old 500 cap so 24-month backfills
+// don't silently truncate for bigger brands.
+const MAX_PAGES_INCREMENTAL = 500;
+const MAX_PAGES_BACKFILL = 2000; // ~200K events, enough for most 24mo pulls
 
 /**
  * Incrementally sync Ordered Product events + profiles from Klaviyo into the local DB.
@@ -34,6 +44,16 @@ export async function syncEvents(
     .returning();
 
   try {
+    // ── Step 0: Load brand config (for lookback_months) ──
+
+    let lookbackMonths = DEFAULT_LOOKBACK_MONTHS;
+    try {
+      const config = await getBrandConfig(accountId);
+      lookbackMonths = config.lookbackMonths;
+    } catch (err) {
+      console.warn("Could not load brand config, using default lookback:", err);
+    }
+
     // ── Step 1: Sync events ──
 
     const [lastSync] = await db
@@ -61,16 +81,56 @@ export async function syncEvents(
       );
     }
 
+    // ── Step 1a: Optional historical backfill ──
+    // If the config's lookback window extends further back than the earliest
+    // event we currently have, pull the missing [target..earliest] window.
+    // This handles the case where the user bumped lookbackMonths after an
+    // initial sync: simply raising a constant wouldn't pull older data because
+    // incremental sync only walks forward from the high-water mark.
+    let backfillEvents = 0;
+    {
+      const target = new Date();
+      target.setMonth(target.getMonth() - lookbackMonths);
+
+      const [{ earliest }] = await db
+        .select({ earliest: min(events.datetime) })
+        .from(events)
+        .where(eq(events.accountId, accountId));
+
+      if (earliest && earliest.getTime() > target.getTime()) {
+        const backfillFrom = target.toISOString();
+        const backfillTo = new Date(earliest.getTime() - 1000).toISOString();
+        await db
+          .update(syncRuns)
+          .set({ status: "backfilling" })
+          .where(eq(syncRuns.id, run.id));
+
+        const backfillRaw = await fetchEventsByMetricIds(
+          accessToken,
+          [orderedProductMetric.id],
+          { dateFrom: backfillFrom, dateTo: backfillTo, maxPages: MAX_PAGES_BACKFILL }
+        );
+
+        backfillEvents = await upsertEventBatches(accountId, backfillRaw);
+
+        await db
+          .update(syncRuns)
+          .set({ status: "syncing" })
+          .where(eq(syncRuns.id, run.id));
+      }
+    }
+
+    // ── Step 1b: Forward/incremental pull ──
     const fetchOptions: { dateFrom?: string; maxPages?: number } = {};
     if (lastDatetime) {
       const from = new Date(lastDatetime.getTime() + 1000);
       fetchOptions.dateFrom = from.toISOString();
     } else {
-      const twelveMonthsAgo = new Date();
-      twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
-      fetchOptions.dateFrom = twelveMonthsAgo.toISOString().slice(0, 10);
+      const lookbackStart = new Date();
+      lookbackStart.setMonth(lookbackStart.getMonth() - lookbackMonths);
+      fetchOptions.dateFrom = lookbackStart.toISOString().slice(0, 10);
     }
-    fetchOptions.maxPages = 500;
+    fetchOptions.maxPages = MAX_PAGES_INCREMENTAL;
 
     const rawEvents = await fetchEventsByMetricIds(
       accessToken,
@@ -79,40 +139,7 @@ export async function syncEvents(
     );
 
     // Upsert events
-    let inserted = 0;
-    const batchSize = 100;
-
-    for (let i = 0; i < rawEvents.length; i += batchSize) {
-      const batch = rawEvents.slice(i, i + batchSize);
-      const values = batch
-        .filter((e) => e.profileId && e.datetime)
-        .map((e) => ({
-          accountId,
-          klaviyoEventId: e.id,
-          profileId: e.profileId,
-          datetime: new Date(e.datetime),
-          value: e.value || 0,
-          productName: e.productName || "Unknown",
-          productId: e.productId || null,
-          categories: e.categories || [],
-          productType: e.productType || null,
-          brand: e.brand || null,
-          quantity: e.quantity || 1,
-          orderId: e.orderId || null,
-          sku: e.sku || null,
-        }));
-
-      if (values.length > 0) {
-        const result = await db
-          .insert(events)
-          .values(values)
-          .onConflictDoNothing({
-            target: [events.accountId, events.klaviyoEventId],
-          })
-          .returning({ id: events.id });
-        inserted += result.length;
-      }
-    }
+    const inserted = await upsertEventBatches(accountId, rawEvents);
 
     // ── Step 2: Sync profiles ──
 
@@ -137,9 +164,10 @@ export async function syncEvents(
     let profilesSynced = 0;
     if (missingIds.length > 0) {
       const freshProfiles = await fetchProfiles(accessToken, missingIds);
+      const profileBatchSize = 100;
 
-      for (let i = 0; i < freshProfiles.length; i += batchSize) {
-        const batch = freshProfiles.slice(i, i + batchSize);
+      for (let i = 0; i < freshProfiles.length; i += profileBatchSize) {
+        const batch = freshProfiles.slice(i, i + profileBatchSize);
         const values = batch.map((p) => ({
           accountId,
           klaviyoProfileId: p.id,
@@ -197,6 +225,7 @@ export async function syncEvents(
       totalEvents: Number(total),
       profilesSynced,
       syncRunId: run.id,
+      backfillEvents,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -210,4 +239,52 @@ export async function syncEvents(
       .where(eq(syncRuns.id, run.id));
     throw error;
   }
+}
+
+/**
+ * Upsert a list of raw Klaviyo events into the `events` table. Batches in
+ * groups of 100; idempotent on (account_id, klaviyo_event_id). Returns the
+ * number of newly inserted rows (conflicts skipped).
+ */
+async function upsertEventBatches(
+  accountId: string,
+  rawEvents: OrderedProductEvent[]
+): Promise<number> {
+  const batchSize = 100;
+  let inserted = 0;
+
+  for (let i = 0; i < rawEvents.length; i += batchSize) {
+    const batch = rawEvents.slice(i, i + batchSize);
+    const values = batch
+      .filter((e) => e.profileId && e.datetime)
+      .map((e) => ({
+        accountId,
+        klaviyoEventId: e.id,
+        profileId: e.profileId,
+        datetime: new Date(e.datetime),
+        value: e.value || 0,
+        productName: e.productName || "Unknown",
+        productId: e.productId || null,
+        categories: e.categories || [],
+        productType: e.productType || null,
+        brand: e.brand || null,
+        quantity: e.quantity || 1,
+        orderId: e.orderId || null,
+        sku: e.sku || null,
+        discountCode: e.discountCode || null,
+      }));
+
+    if (values.length > 0) {
+      const result = await db
+        .insert(events)
+        .values(values)
+        .onConflictDoNothing({
+          target: [events.accountId, events.klaviyoEventId],
+        })
+        .returning({ id: events.id });
+      inserted += result.length;
+    }
+  }
+
+  return inserted;
 }

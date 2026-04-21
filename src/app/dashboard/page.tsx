@@ -13,6 +13,19 @@ import RevenueConcentration from "@/components/RevenueConcentration";
 import CohortTable from "@/components/CohortTable";
 import AffinityMatrix from "@/components/AffinityMatrix";
 import JourneyExplorer from "@/components/JourneyExplorer";
+import ChannelSelector from "@/components/ChannelSelector";
+import CohortCurves from "@/components/CohortCurves";
+import TimeBetweenOrders from "@/components/TimeBetweenOrders";
+import FirstToSecondMatrix from "@/components/FirstToSecondMatrix";
+import OrderCountDistribution from "@/components/OrderCountDistribution";
+import DiscountCodeUsage from "@/components/DiscountCodeUsage";
+import CrossChannelTile from "@/components/CrossChannelTile";
+import { ChatButton, ChatPanel } from "@/components/chat";
+import { useChat } from "@/hooks/useChat";
+import { useIsMobile } from "@/hooks/useIsMobile";
+
+const COMBINED_CHANNEL_ID = "__combined__";
+const UNASSIGNED_CHANNEL_ID = "unassigned";
 
 interface AnalysisStatus {
   runId?: string;
@@ -35,6 +48,58 @@ interface DashboardData {
   cohortRetention: any[] | null;
   productAffinity: any[] | null;
   customerJourneys: any[] | null;
+  cohortAnalytics: CohortAnalytics | null;
+  channelsSnapshot: any[] | null;
+  configSnapshot: any | null;
+}
+
+// Shape mirrors CohortAnalyticsOutput in src/lib/cohort-analysis.ts
+interface CohortAnalytics {
+  cohortCurves: { combined: any; perChannel: Record<string, any> };
+  timeBetweenOrders: { combined: any; perChannel: Record<string, any> };
+  firstToSecondMatrix: { combined: any; perChannel: Record<string, any> };
+  orderCountDistribution: { combined: any; perChannel: Record<string, any> };
+  discountCodeUsage: { combined: any; perChannel: Record<string, any> };
+  crossChannel: any;
+  unassignedSize: number;
+  warnings: string[];
+  channelLabels: Array<{ id: string; label: string }>;
+}
+
+/**
+ * Pick the right slice of a per-channel metric based on the selected channel.
+ */
+function pickChannelSlice<T>(
+  result: { combined: T; perChannel: Record<string, T> } | null | undefined,
+  channelId: string
+): T | null {
+  if (!result) return null;
+  if (channelId === COMBINED_CHANNEL_ID) return result.combined;
+  return result.perChannel[channelId] ?? null;
+}
+
+/**
+ * Build the option list for the global channel selector. Always include
+ * "Combined" first; include every configured channel; include "Unassigned"
+ * only if any customer landed there.
+ */
+function buildChannelOptions(cohortAnalytics: CohortAnalytics) {
+  const options: Array<{ id: string; label: string; count?: number }> = [
+    {
+      id: COMBINED_CHANNEL_ID,
+      label: "Combined",
+      count: cohortAnalytics.cohortCurves?.combined?.totalCustomers,
+    },
+  ];
+  for (const ch of cohortAnalytics.channelLabels) {
+    if (ch.id === UNASSIGNED_CHANNEL_ID && cohortAnalytics.unassignedSize === 0) continue;
+    options.push({
+      id: ch.id,
+      label: ch.label,
+      count: cohortAnalytics.cohortCurves?.perChannel?.[ch.id]?.totalCustomers,
+    });
+  }
+  return options;
 }
 
 function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -86,6 +151,22 @@ function apiHeaders(extra?: Record<string, string>): Record<string, string> {
     : undefined;
   if (secret) headers["x-api-key"] = secret;
   return headers;
+}
+
+/**
+ * Trigger a CSV download from the export API. Uses the latest completed run
+ * implicitly (the API resolves `runId` from `accountId` when omitted).
+ */
+function exportCsv(accountId: string | null, metric: string, channelId: string) {
+  if (!accountId) return;
+  const params = new URLSearchParams({ accountId, metric });
+  if (channelId && channelId !== "__combined__") params.set("channel", channelId);
+  const secret = typeof window !== "undefined"
+    ? process.env.NEXT_PUBLIC_APP_SECRET
+    : undefined;
+  if (secret) params.set("apiKey", secret);
+  // Open in a new tab so the browser handles the download via Content-Disposition.
+  window.open(`/api/export?${params.toString()}`, "_blank");
 }
 
 /** Helper: call /api/analyze, return runId if cached, else null */
@@ -154,7 +235,11 @@ function DashboardContent() {
   const [isReanalyzing, setIsReanalyzing] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [activeSegmentId, setActiveSegmentId] = useState("");
+  const [selectedChannelId, setSelectedChannelId] = useState<string>(COMBINED_CHANNEL_ID);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const isMobile = useIsMobile();
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const chat = useChat({ dashboardData: data });
 
   const fetchDashboardData = useCallback(
     async (runId: string): Promise<DashboardData> => {
@@ -377,9 +462,17 @@ function DashboardContent() {
       <div className="mb-6">
         <div className="flex items-start justify-between gap-4">
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Product Journey</h1>
-          <button onClick={handleReanalyze} className="shrink-0 px-3 py-1.5 text-xs sm:text-sm font-medium rounded-lg border border-[var(--card-border)] text-[var(--muted)] hover:text-[var(--foreground)] hover:border-[var(--accent)] transition-all">
-            Re-analyze
-          </button>
+          <div className="flex items-center gap-2">
+            <a
+              href={`/settings?accountId=${accountId}`}
+              className="shrink-0 px-3 py-1.5 text-xs sm:text-sm font-medium rounded-lg border border-[var(--card-border)] text-[var(--muted)] hover:text-[var(--foreground)] hover:border-[var(--accent)] transition-all"
+            >
+              Settings
+            </a>
+            <button onClick={handleReanalyze} className="shrink-0 px-3 py-1.5 text-xs sm:text-sm font-medium rounded-lg border border-[var(--card-border)] text-[var(--muted)] hover:text-[var(--foreground)] hover:border-[var(--accent)] transition-all">
+              Re-analyze
+            </button>
+          </div>
         </div>
         <p className="text-xs sm:text-sm text-[var(--muted)] mt-1">
           {isComparing ? (
@@ -431,7 +524,17 @@ function DashboardContent() {
         </div>
       )}
 
-      <DashboardTabs activeTab={activeTab} onChange={setActiveTab} />
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <DashboardTabs activeTab={activeTab} onChange={setActiveTab} />
+        {!isComparing && data.cohortAnalytics && (activeTab === "cohorts" || activeTab === "retention") && (
+          <ChannelSelector
+            channels={buildChannelOptions(data.cohortAnalytics)}
+            value={selectedChannelId}
+            onChange={setSelectedChannelId}
+            className="mb-6"
+          />
+        )}
+      </div>
 
       {/* Overview */}
       {activeTab === "overview" && (
@@ -511,6 +614,125 @@ function DashboardContent() {
         </div>
       )}
 
+      {/* Cohorts (loyalty module) */}
+      {activeTab === "cohorts" && (
+        <div className="space-y-6">
+          {!data.cohortAnalytics ? (
+            <div className="card p-8 text-center">
+              <h3 className="text-base font-semibold">No cohort analytics yet</h3>
+              <p className="text-sm text-[var(--muted)] mt-2 max-w-md mx-auto">
+                Cohort analytics needs a brand config. Open{" "}
+                <a
+                  href={`/settings?accountId=${accountId}`}
+                  className="text-[var(--accent)] hover:underline"
+                >
+                  Settings
+                </a>{" "}
+                to configure channels and re-run analysis.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Warnings */}
+              {data.cohortAnalytics.warnings.includes("monthly_cohorts_under_50") && (
+                <div className="card p-4 border-l-4 border-l-[var(--warning)]">
+                  <p className="text-sm">
+                    <span className="font-medium text-[var(--warning)]">Thin cohorts.</span>{" "}
+                    Some monthly cohorts have fewer than 50 customers. Consider switching to
+                    quarterly granularity in{" "}
+                    <a
+                      href={`/settings?accountId=${accountId}`}
+                      className="text-[var(--accent)] hover:underline"
+                    >
+                      Settings
+                    </a>
+                    .
+                  </p>
+                </div>
+              )}
+
+              {/* Top tiles: cross-channel + unassigned visibility */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <CrossChannelTile
+                  data={data.cohortAnalytics.crossChannel}
+                  channelLabels={data.cohortAnalytics.channelLabels.filter(
+                    (c) => c.id !== UNASSIGNED_CHANNEL_ID
+                  )}
+                />
+                {data.cohortAnalytics.unassignedSize > 0 && (
+                  <div className="card stat-card p-5 sm:p-6">
+                    <p className="text-[10px] font-medium uppercase tracking-wider text-[var(--muted)]">
+                      Unassigned customers
+                    </p>
+                    <p className="text-2xl sm:text-3xl font-bold mt-1">
+                      {data.cohortAnalytics.unassignedSize.toLocaleString()}
+                    </p>
+                    <p className="text-[11px] text-[var(--muted)] mt-1">
+                      Customers matching no configured channel rule. Review channels in{" "}
+                      <a
+                        href={`/settings?accountId=${accountId}`}
+                        className="text-[var(--accent)] hover:underline"
+                      >
+                        Settings
+                      </a>{" "}
+                      if this seems high.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <CohortCurves
+                data={pickChannelSlice(data.cohortAnalytics.cohortCurves, selectedChannelId)}
+                onExport={() =>
+                  exportCsv(accountId, "cohort-curves", selectedChannelId)
+                }
+              />
+
+              <TimeBetweenOrders
+                data={pickChannelSlice(
+                  data.cohortAnalytics.timeBetweenOrders,
+                  selectedChannelId
+                )}
+                onExport={() =>
+                  exportCsv(accountId, "time-between-orders", selectedChannelId)
+                }
+              />
+
+              <FirstToSecondMatrix
+                data={pickChannelSlice(
+                  data.cohortAnalytics.firstToSecondMatrix,
+                  selectedChannelId
+                )}
+                onExport={() =>
+                  exportCsv(accountId, "first-to-second-matrix", selectedChannelId)
+                }
+              />
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <OrderCountDistribution
+                  data={pickChannelSlice(
+                    data.cohortAnalytics.orderCountDistribution,
+                    selectedChannelId
+                  )}
+                  onExport={() =>
+                    exportCsv(accountId, "order-count-distribution", selectedChannelId)
+                  }
+                />
+                <DiscountCodeUsage
+                  data={pickChannelSlice(
+                    data.cohortAnalytics.discountCodeUsage,
+                    selectedChannelId
+                  )}
+                  onExport={() =>
+                    exportCsv(accountId, "discount-code-usage", selectedChannelId)
+                  }
+                />
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Products */}
       {activeTab === "products" && (
         <div className="space-y-6">
@@ -524,6 +746,20 @@ function DashboardContent() {
         <div className="space-y-6">
           {data.customerJourneys && data.customerJourneys.length > 0 && <JourneyExplorer data={data.customerJourneys} />}
         </div>
+      )}
+
+      {/* Chat */}
+      <ChatButton isOpen={isChatOpen} onClick={() => setIsChatOpen(!isChatOpen)} />
+      {isChatOpen && (
+        <ChatPanel
+          messages={chat.messages}
+          isStreaming={chat.isStreaming}
+          error={chat.error}
+          onSend={chat.sendMessage}
+          onClear={chat.clearMessages}
+          onClose={() => setIsChatOpen(false)}
+          isMobile={isMobile}
+        />
       )}
     </div>
   );

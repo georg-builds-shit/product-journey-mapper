@@ -4,6 +4,7 @@ import { accounts, analysisRuns } from "@/db/schema";
 import { eq, and, desc, inArray } from "drizzle-orm";
 import { inngest } from "@/lib/inngest";
 import { requireAuth } from "@/lib/auth";
+import { getBrandConfig } from "@/lib/config";
 
 export async function POST(request: NextRequest) {
   const authError = requireAuth(request);
@@ -78,7 +79,31 @@ export async function POST(request: NextRequest) {
       (!segmentId && !existingRun.segmentId) ||
       segmentId === existingRun.segmentId;
 
-    if (sameFrom && sameTo && sameSegment) {
+    // Invalidate cache if brand config has changed since the run (e.g. channels,
+    // groupings, granularity). Compare a coarse signature of the snapshot.
+    const currentConfig = await getBrandConfig(accountId).catch(() => null);
+    const runSignature = existingRun.configSnapshotJson
+      ? JSON.stringify({
+          channels: existingRun.channelsSnapshotJson ?? [],
+          ...(existingRun.configSnapshotJson as Record<string, unknown>),
+        })
+      : null;
+    const currentSignature = currentConfig
+      ? JSON.stringify({
+          channels: currentConfig.channels,
+          cohortGranularity: currentConfig.cohortGranularity,
+          lookbackMonths: currentConfig.lookbackMonths,
+          excludeRefunds: currentConfig.excludeRefunds,
+          minOrderValue: currentConfig.minOrderValue,
+          excludeTestRules: currentConfig.excludeTestRules,
+          productGroupings: currentConfig.productGroupings,
+        })
+      : null;
+    const sameConfig =
+      currentSignature === null || // no config → treat as match (unchanged behavior)
+      runSignature === currentSignature;
+
+    if (sameFrom && sameTo && sameSegment && sameConfig) {
       return NextResponse.json({
         status: "cached",
         accountId: account.id,

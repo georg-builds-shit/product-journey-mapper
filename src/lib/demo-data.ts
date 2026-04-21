@@ -193,6 +193,7 @@ export function generateDemoEvents(customerCount = 200): OrderedProductEvent[] {
           quantity: 1,
           orderId,
           sku: `GL-${product.name.substring(0, 3).toUpperCase()}-001`,
+          discountCode: null,
         });
       }
 
@@ -246,6 +247,7 @@ export function generateDemoPOSEvents(customerCount = 200): OrderedProductEvent[
         quantity: 1,
         orderId,
         sku: `GL-${product.name.substring(0, 3).toUpperCase()}-001`,
+        discountCode: null,
       });
     }
   }

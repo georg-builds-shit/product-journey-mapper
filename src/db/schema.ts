@@ -6,6 +6,7 @@ import {
   integer,
   real,
   jsonb,
+  boolean,
   uniqueIndex,
   index,
 } from "drizzle-orm/pg-core";
@@ -47,6 +48,15 @@ export const analysisRuns = pgTable("analysis_runs", {
   cohortRetentionJson: jsonb("cohort_retention_json"),
   productAffinityJson: jsonb("product_affinity_json"),
   customerJourneysJson: jsonb("customer_journeys_json"),
+  // Cohort & repeat-purchase analytics (Phase 4 — loyalty module)
+  // One fat blob with all 6 new metrics (cohortCurves, timeBetweenOrders,
+  // firstToSecondMatrix, orderCountDistribution, discountCodeUsage,
+  // crossChannel) plus unassignedChannelSize and warnings[].
+  cohortAnalyticsJson: jsonb("cohort_analytics_json"),
+  // Snapshot of brand_configs.channels at run time (reproducibility)
+  channelsSnapshotJson: jsonb("channels_snapshot_json"),
+  // Snapshot of granularity / lookback / exclusion config at run time
+  configSnapshotJson: jsonb("config_snapshot_json"),
 },
 (table) => [
   index("analysis_runs_account_status_idx").on(table.accountId, table.status, table.createdAt),
@@ -108,6 +118,7 @@ export const events = pgTable(
     quantity: integer("quantity").default(1),
     orderId: text("order_id"),
     sku: text("sku"),
+    discountCode: text("discount_code"), // nullable — parsed from event_properties fallback chain
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [
@@ -155,6 +166,36 @@ export const productTransitions = pgTable("product_transitions", {
   avgDaysBetween: real("avg_days_between"),
   step: integer("step").notNull(), // 1→2, 2→3, etc.
 });
+
+// Per-brand configuration for the cohort & repeat-purchase analytics module.
+// One row per account (account_id unique). Rules are stored inline rather
+// than as FK to `segments` so channel definitions are stable when segments
+// are later edited.
+export const brandConfigs = pgTable(
+  "brand_configs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    accountId: uuid("account_id")
+      .references(() => accounts.id, { onDelete: "cascade" })
+      .notNull(),
+    // Array of { id, label, rule: { type: "segment"|"list"|"property", rules: SegmentRule[] } }
+    // Priority = array order (first-match-wins). Customers matching none go to "unassigned".
+    channels: jsonb("channels").notNull().default([]),
+    // null = per-product analysis; otherwise { byProductId?, bySku?, byProductName?, lineLabels[] }
+    productGroupings: jsonb("product_groupings"),
+    cohortGranularity: text("cohort_granularity").notNull().default("monthly"), // "monthly" | "quarterly"
+    lookbackMonths: integer("lookback_months").notNull().default(24),
+    excludeRefunds: boolean("exclude_refunds").notNull().default(true),
+    minOrderValue: real("min_order_value").notNull().default(0.01),
+    // Optional SegmentRule[] for test-order exclusion (e.g., email contains "test@")
+    excludeTestRules: jsonb("exclude_test_rules").notNull().default([]),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("brand_configs_account_idx").on(table.accountId),
+  ]
+);
 
 // First-purchase products and their downstream impact
 export const gatewayProducts = pgTable("gateway_products", {
