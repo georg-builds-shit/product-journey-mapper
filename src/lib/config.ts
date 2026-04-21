@@ -8,28 +8,36 @@ import type { SegmentRule } from "./segment-eval";
 // ─────────────────────────────────────────────────────────────
 
 /**
- * A single channel definition. Customers are assigned to the first channel
+ * A single audience definition. Customers are assigned to the first audience
  * whose `rule` they satisfy (priority = array order). Customers matching no
- * channel are bucketed as "unassigned".
+ * audience are bucketed as "unassigned".
+ *
+ * An audience is the dimension metrics are split along — e.g. DTC vs
+ * Affiliate, Wholesale vs Retail, VIP vs Standard. Brands configure as
+ * many as they need.
  */
-export interface ChannelDefinition {
-  id: string; // stable key used as channelId in analytics output
+export interface AudienceDefinition {
+  id: string; // stable key used in analytics output
   label: string; // display name
   rule:
-    | { type: "segment"; rules: SegmentRule[] } // profile-property/location/list/klaviyo-segment rules evaluated in memory
-    | { type: "list"; listId: string } // shorthand: profile is in this Klaviyo list
-    | { type: "klaviyo_segment"; segmentId: string }; // shorthand: profile is in this Klaviyo segment
+    | { type: "segment"; rules: SegmentRule[] } // free-form filter rules on profile/location/membership
+    | { type: "list"; listId: string } // profile is in this Klaviyo list
+    | { type: "klaviyo_segment"; segmentId: string }; // profile is in this Klaviyo segment
 }
 
 /**
- * Optional product → product-line grouping. Lookup order:
+ * Optional product → product-family mapping. Lookup order:
  *   byProductId → bySku → byProductName → fall back to raw product identifier.
+ *
+ * A "family" is a brand-internal grouping — e.g. many SKUs collapse into
+ * "Kits" / "Supplements" / "Accessories" so charts read as families instead
+ * of an explosion of individual SKU names.
  */
-export interface ProductGroupings {
+export interface ProductFamilies {
   byProductId?: Record<string, string>;
   bySku?: Record<string, string>;
   byProductName?: Record<string, string>;
-  lineLabels?: string[]; // optional canonical list for UI ordering
+  familyLabels?: string[]; // optional canonical list for UI ordering
 }
 
 export type CohortGranularity = "monthly" | "quarterly";
@@ -37,8 +45,8 @@ export type CohortGranularity = "monthly" | "quarterly";
 export interface BrandConfig {
   id: string;
   accountId: string;
-  channels: ChannelDefinition[];
-  productGroupings: ProductGroupings | null;
+  audiences: AudienceDefinition[];
+  productFamilies: ProductFamilies | null;
   cohortGranularity: CohortGranularity;
   lookbackMonths: number;
   excludeRefunds: boolean;
@@ -56,8 +64,8 @@ export const DEFAULT_CONFIG: Omit<
   BrandConfig,
   "id" | "accountId" | "createdAt" | "updatedAt"
 > = {
-  channels: [],
-  productGroupings: null,
+  audiences: [],
+  productFamilies: null,
   cohortGranularity: "monthly",
   lookbackMonths: 24,
   excludeRefunds: true,
@@ -90,7 +98,7 @@ export async function getBrandConfig(accountId: string): Promise<BrandConfig> {
 }
 
 /**
- * Partial update. Returns the updated config. Validates channel ids are
+ * Partial update. Returns the updated config. Validates audience ids are
  * unique and non-empty.
  */
 export async function updateBrandConfig(
@@ -102,8 +110,8 @@ export async function updateBrandConfig(
   // Ensure row exists
   await getBrandConfig(accountId);
 
-  if (patch.channels) {
-    validateChannels(patch.channels);
+  if (patch.audiences) {
+    validateAudiences(patch.audiences);
   }
   if (patch.cohortGranularity && !["monthly", "quarterly"].includes(patch.cohortGranularity)) {
     throw new Error(`Invalid cohortGranularity: ${patch.cohortGranularity}`);
@@ -118,8 +126,8 @@ export async function updateBrandConfig(
   const [updated] = await db
     .update(brandConfigs)
     .set({
-      ...(patch.channels !== undefined && { channels: patch.channels }),
-      ...(patch.productGroupings !== undefined && { productGroupings: patch.productGroupings }),
+      ...(patch.audiences !== undefined && { audiences: patch.audiences }),
+      ...(patch.productFamilies !== undefined && { productFamilies: patch.productFamilies }),
       ...(patch.cohortGranularity !== undefined && { cohortGranularity: patch.cohortGranularity }),
       ...(patch.lookbackMonths !== undefined && { lookbackMonths: patch.lookbackMonths }),
       ...(patch.excludeRefunds !== undefined && { excludeRefunds: patch.excludeRefunds }),
@@ -141,8 +149,8 @@ function rowToConfig(row: typeof brandConfigs.$inferSelect): BrandConfig {
   return {
     id: row.id,
     accountId: row.accountId,
-    channels: (row.channels as ChannelDefinition[]) ?? [],
-    productGroupings: (row.productGroupings as ProductGroupings | null) ?? null,
+    audiences: (row.audiences as AudienceDefinition[]) ?? [],
+    productFamilies: (row.productFamilies as ProductFamilies | null) ?? null,
     cohortGranularity: (row.cohortGranularity as CohortGranularity) ?? "monthly",
     lookbackMonths: row.lookbackMonths ?? 24,
     excludeRefunds: row.excludeRefunds ?? true,
@@ -153,48 +161,48 @@ function rowToConfig(row: typeof brandConfigs.$inferSelect): BrandConfig {
   };
 }
 
-function validateChannels(channels: ChannelDefinition[]): void {
+function validateAudiences(audiences: AudienceDefinition[]): void {
   const seen = new Set<string>();
-  for (const ch of channels) {
-    if (!ch.id || !ch.id.trim()) throw new Error("Channel id is required");
-    if (!ch.label || !ch.label.trim()) throw new Error("Channel label is required");
-    if (seen.has(ch.id)) throw new Error(`Duplicate channel id: ${ch.id}`);
-    seen.add(ch.id);
-    if (!ch.rule || !ch.rule.type) throw new Error(`Channel "${ch.label}" is missing a rule`);
-    if (ch.rule.type === "segment" && (!ch.rule.rules || ch.rule.rules.length === 0)) {
-      throw new Error(`Channel "${ch.label}" segment rule needs at least one rule entry`);
+  for (const a of audiences) {
+    if (!a.id || !a.id.trim()) throw new Error("Audience id is required");
+    if (!a.label || !a.label.trim()) throw new Error("Audience label is required");
+    if (seen.has(a.id)) throw new Error(`Duplicate audience id: ${a.id}`);
+    seen.add(a.id);
+    if (!a.rule || !a.rule.type) throw new Error(`Audience "${a.label}" is missing a rule`);
+    if (a.rule.type === "segment" && (!a.rule.rules || a.rule.rules.length === 0)) {
+      throw new Error(`Audience "${a.label}" rule needs at least one condition`);
     }
-    if (ch.rule.type === "list" && !ch.rule.listId) {
-      throw new Error(`Channel "${ch.label}" list rule needs a listId`);
+    if (a.rule.type === "list" && !a.rule.listId) {
+      throw new Error(`Audience "${a.label}" list rule needs a listId`);
     }
-    if (ch.rule.type === "klaviyo_segment" && !ch.rule.segmentId) {
-      throw new Error(`Channel "${ch.label}" klaviyo_segment rule needs a segmentId`);
+    if (a.rule.type === "klaviyo_segment" && !a.rule.segmentId) {
+      throw new Error(`Audience "${a.label}" klaviyo_segment rule needs a segmentId`);
     }
   }
 }
 
 /**
- * Apply product grouping to a raw product identifier. Returns the product line
+ * Apply product-family mapping to a raw product identifier. Returns the family
  * label if configured, else the original identifier.
  */
-export function applyGrouping(
+export function applyFamily(
   product: { productId?: string | null; sku?: string | null; productName: string },
-  grouping: ProductGroupings | null
+  families: ProductFamilies | null
 ): string {
-  if (!grouping) return product.productName;
-  if (product.productId && grouping.byProductId?.[product.productId]) {
-    return grouping.byProductId[product.productId];
+  if (!families) return product.productName;
+  if (product.productId && families.byProductId?.[product.productId]) {
+    return families.byProductId[product.productId];
   }
-  if (product.sku && grouping.bySku?.[product.sku]) {
-    return grouping.bySku[product.sku];
+  if (product.sku && families.bySku?.[product.sku]) {
+    return families.bySku[product.sku];
   }
-  if (grouping.byProductName?.[product.productName]) {
-    return grouping.byProductName[product.productName];
+  if (families.byProductName?.[product.productName]) {
+    return families.byProductName[product.productName];
   }
   return product.productName;
 }
 
-export const UNASSIGNED_CHANNEL_ID = "unassigned";
-export const UNASSIGNED_CHANNEL_LABEL = "Unassigned";
-export const COMBINED_CHANNEL_ID = "__combined__";
-export const COMBINED_CHANNEL_LABEL = "Combined";
+export const UNASSIGNED_AUDIENCE_ID = "unassigned";
+export const UNASSIGNED_AUDIENCE_LABEL = "Unassigned";
+export const COMBINED_AUDIENCE_ID = "__combined__";
+export const COMBINED_AUDIENCE_LABEL = "Combined";

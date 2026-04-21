@@ -84,19 +84,19 @@ export async function POST(request: NextRequest) {
     const currentConfig = await getBrandConfig(accountId).catch(() => null);
     const runSignature = existingRun.configSnapshotJson
       ? JSON.stringify({
-          channels: existingRun.channelsSnapshotJson ?? [],
+          audiences: existingRun.audiencesSnapshotJson ?? [],
           ...(existingRun.configSnapshotJson as Record<string, unknown>),
         })
       : null;
     const currentSignature = currentConfig
       ? JSON.stringify({
-          channels: currentConfig.channels,
+          audiences: currentConfig.audiences,
           cohortGranularity: currentConfig.cohortGranularity,
           lookbackMonths: currentConfig.lookbackMonths,
           excludeRefunds: currentConfig.excludeRefunds,
           minOrderValue: currentConfig.minOrderValue,
           excludeTestRules: currentConfig.excludeTestRules,
-          productGroupings: currentConfig.productGroupings,
+          productFamilies: currentConfig.productFamilies,
         })
       : null;
     const sameConfig =

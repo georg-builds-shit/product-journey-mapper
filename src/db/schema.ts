@@ -51,10 +51,11 @@ export const analysisRuns = pgTable("analysis_runs", {
   // Cohort & repeat-purchase analytics (Phase 4 — loyalty module)
   // One fat blob with all 6 new metrics (cohortCurves, timeBetweenOrders,
   // firstToSecondMatrix, orderCountDistribution, discountCodeUsage,
-  // crossChannel) plus unassignedChannelSize and warnings[].
+  // crossAudience) plus unassignedAudienceSize and warnings[].
   cohortAnalyticsJson: jsonb("cohort_analytics_json"),
-  // Snapshot of brand_configs.channels at run time (reproducibility)
-  channelsSnapshotJson: jsonb("channels_snapshot_json"),
+  // Snapshot of brand_configs.audiences at run time (reproducibility).
+  // DB column is still "channels_snapshot_json" (see schema.ts header note).
+  audiencesSnapshotJson: jsonb("channels_snapshot_json"),
   // Snapshot of granularity / lookback / exclusion config at run time
   configSnapshotJson: jsonb("config_snapshot_json"),
 },
@@ -169,8 +170,14 @@ export const productTransitions = pgTable("product_transitions", {
 
 // Per-brand configuration for the cohort & repeat-purchase analytics module.
 // One row per account (account_id unique). Rules are stored inline rather
-// than as FK to `segments` so channel definitions are stable when segments
+// than as FK to `segments` so audience definitions are stable when segments
 // are later edited.
+//
+// NOTE: the underlying Postgres columns are still named `channels`,
+// `channels_snapshot_json` (analysis_runs), and `product_groupings` from
+// the initial migration. They're aliased to `audiences`, `audiencesSnapshotJson`,
+// and `productFamilies` here to match the user-facing terminology. No DB
+// migration needed; the physical column names are an internal detail.
 export const brandConfigs = pgTable(
   "brand_configs",
   {
@@ -180,9 +187,9 @@ export const brandConfigs = pgTable(
       .notNull(),
     // Array of { id, label, rule: { type: "segment"|"list"|"property", rules: SegmentRule[] } }
     // Priority = array order (first-match-wins). Customers matching none go to "unassigned".
-    channels: jsonb("channels").notNull().default([]),
+    audiences: jsonb("channels").notNull().default([]),
     // null = per-product analysis; otherwise { byProductId?, bySku?, byProductName?, lineLabels[] }
-    productGroupings: jsonb("product_groupings"),
+    productFamilies: jsonb("product_groupings"),
     cohortGranularity: text("cohort_granularity").notNull().default("monthly"), // "monthly" | "quarterly"
     lookbackMonths: integer("lookback_months").notNull().default(24),
     excludeRefunds: boolean("exclude_refunds").notNull().default(true),

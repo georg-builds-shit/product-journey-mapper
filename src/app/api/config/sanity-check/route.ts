@@ -3,16 +3,16 @@ import { db } from "@/db";
 import { accounts, events, profileCache } from "@/db/schema";
 import { eq, and, inArray, sql } from "drizzle-orm";
 import { requireAuth } from "@/lib/auth";
-import { getBrandConfig, UNASSIGNED_CHANNEL_ID } from "@/lib/config";
+import { getBrandConfig, UNASSIGNED_AUDIENCE_ID } from "@/lib/config";
 import { fetchListOrSegmentProfileIds } from "@/lib/klaviyo";
 import { getFreshAccessToken } from "@/lib/klaviyo-auth";
-import { classifyChannels } from "@/lib/channel-classify";
+import { classifyAudiences } from "@/lib/channel-classify";
 
 /**
  * GET /api/config/sanity-check?accountId=X
  *
- * Returns per-channel member counts + discount code prevalence so the analyst
- * can validate channel rules before running a full analysis.
+ * Returns per-audience member counts + discount code prevalence so the analyst
+ * can validate audience rules before running a full analysis.
  */
 export async function GET(request: NextRequest) {
   const authError = requireAuth(request);
@@ -50,38 +50,36 @@ export async function GET(request: NextRequest) {
 
   const profileData = cachedProfiles.map((p) => ({
     id: p.klaviyoProfileId,
-    properties: (p.properties as Record<string, any>) || {},
-    location: (p.location as Record<string, any>) || {},
+    properties: (p.properties as Record<string, unknown>) || {},
+    location: (p.location as Record<string, unknown>) || {},
     listIds: (p.listIds as string[]) || [],
     segmentIds: (p.segmentIds as string[]) || [],
   }));
 
-  // Fetch list/segment membership for any list/klaviyo_segment-type channels.
-  // Only if we have a decrypted access token.
+  // Fetch list/segment membership for any list/klaviyo_segment-type audiences.
   try {
     const [account] = await db.select().from(accounts).where(eq(accounts.id, accountId));
     if (account && account.email !== "demo@productjourneymapper.com") {
       const { accessToken } = await getFreshAccessToken(accountId);
-      for (const ch of config.channels) {
-        if (ch.rule.type === "list") {
-          const memberIds = await fetchListOrSegmentProfileIds(accessToken, "lists", ch.rule.listId);
+      for (const a of config.audiences) {
+        if (a.rule.type === "list") {
+          const memberIds = await fetchListOrSegmentProfileIds(accessToken, "lists", a.rule.listId);
           const memberSet = new Set(memberIds);
           for (const p of profileData) {
-            if (memberSet.has(p.id) && !p.listIds.includes(ch.rule.listId)) {
-              p.listIds.push(ch.rule.listId);
+            if (memberSet.has(p.id) && !p.listIds.includes(a.rule.listId)) {
+              p.listIds.push(a.rule.listId);
             }
           }
-        } else if (ch.rule.type === "klaviyo_segment") {
-          const memberIds = await fetchListOrSegmentProfileIds(accessToken, "segments", ch.rule.segmentId);
+        } else if (a.rule.type === "klaviyo_segment") {
+          const memberIds = await fetchListOrSegmentProfileIds(accessToken, "segments", a.rule.segmentId);
           const memberSet = new Set(memberIds);
           for (const p of profileData) {
-            if (memberSet.has(p.id) && !p.segmentIds.includes(ch.rule.segmentId)) {
-              p.segmentIds.push(ch.rule.segmentId);
+            if (memberSet.has(p.id) && !p.segmentIds.includes(a.rule.segmentId)) {
+              p.segmentIds.push(a.rule.segmentId);
             }
           }
-        } else if (ch.rule.type === "segment") {
-          // rules may include in_list / in_segment operators — fetch those too
-          for (const rule of ch.rule.rules) {
+        } else if (a.rule.type === "segment") {
+          for (const rule of a.rule.rules) {
             if ((rule.operator === "in_list" || rule.operator === "not_in_list") && rule.value) {
               const memberIds = await fetchListOrSegmentProfileIds(accessToken, "lists", rule.value);
               const memberSet = new Set(memberIds);
@@ -108,16 +106,16 @@ export async function GET(request: NextRequest) {
   }
 
   // Classify
-  const profileChannelMap = classifyChannels(profileData, config.channels);
+  const profileAudienceMap = classifyAudiences(profileData, config.audiences);
 
   // Aggregate
-  const channelCounts: Record<string, number> = {
-    [UNASSIGNED_CHANNEL_ID]: 0,
+  const audienceCounts: Record<string, number> = {
+    [UNASSIGNED_AUDIENCE_ID]: 0,
   };
-  for (const ch of config.channels) channelCounts[ch.id] = 0;
+  for (const a of config.audiences) audienceCounts[a.id] = 0;
   for (const pid of uniqueProfileIds) {
-    const channel = profileChannelMap.get(pid) || UNASSIGNED_CHANNEL_ID;
-    channelCounts[channel] = (channelCounts[channel] || 0) + 1;
+    const aud = profileAudienceMap.get(pid) || UNASSIGNED_AUDIENCE_ID;
+    audienceCounts[aud] = (audienceCounts[aud] || 0) + 1;
   }
 
   // Discount code prevalence over all cached events
@@ -134,16 +132,16 @@ export async function GET(request: NextRequest) {
   const prevalencePct = totalEvents > 0 ? (withCode / totalEvents) * 100 : 0;
 
   return NextResponse.json({
-    channels: [
-      ...config.channels.map((ch) => ({
-        id: ch.id,
-        label: ch.label,
-        sampleMemberCount: channelCounts[ch.id] || 0,
+    audiences: [
+      ...config.audiences.map((a) => ({
+        id: a.id,
+        label: a.label,
+        sampleMemberCount: audienceCounts[a.id] || 0,
       })),
       {
-        id: UNASSIGNED_CHANNEL_ID,
+        id: UNASSIGNED_AUDIENCE_ID,
         label: "Unassigned",
-        sampleMemberCount: channelCounts[UNASSIGNED_CHANNEL_ID] || 0,
+        sampleMemberCount: audienceCounts[UNASSIGNED_AUDIENCE_ID] || 0,
       },
     ],
     sampleSize: uniqueProfileIds.length,

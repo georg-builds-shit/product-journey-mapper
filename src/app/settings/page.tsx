@@ -3,31 +3,31 @@
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
-interface ChannelRule {
+interface AudienceRule {
   type: "list" | "klaviyo_segment" | "segment";
   listId?: string;
   segmentId?: string;
   rules?: Array<{ field: string; operator: string; value: string }>;
 }
 
-interface ChannelDefinition {
+interface AudienceDefinition {
   id: string;
   label: string;
-  rule: ChannelRule;
+  rule: AudienceRule;
 }
 
-interface ProductGroupings {
+interface ProductFamilies {
   byProductId?: Record<string, string>;
   bySku?: Record<string, string>;
   byProductName?: Record<string, string>;
-  lineLabels?: string[];
+  familyLabels?: string[];
 }
 
 interface BrandConfig {
   id: string;
   accountId: string;
-  channels: ChannelDefinition[];
-  productGroupings: ProductGroupings | null;
+  audiences: AudienceDefinition[];
+  productFamilies: ProductFamilies | null;
   cohortGranularity: "monthly" | "quarterly";
   lookbackMonths: number;
   excludeRefunds: boolean;
@@ -42,7 +42,7 @@ interface Discovery {
 }
 
 interface SanityCheck {
-  channels: Array<{ id: string; label: string; sampleMemberCount: number }>;
+  audiences: Array<{ id: string; label: string; sampleMemberCount: number }>;
   sampleSize: number;
   discountCode: {
     eventsWithCode: number;
@@ -68,7 +68,7 @@ function SettingsContent() {
   const [sanity, setSanity] = useState<SanityCheck | null>(null);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [groupingsText, setGroupingsText] = useState("");
+  const [familiesText, setFamiliesText] = useState("");
   const [saveMessage, setSaveMessage] = useState<{ type: "ok" | "err"; text: string } | null>(null);
 
   useEffect(() => {
@@ -80,7 +80,7 @@ function SettingsContent() {
       .then(([cfg, disc]) => {
         setConfig(cfg);
         setDiscovery(disc);
-        setGroupingsText(groupingsToCsv(cfg.productGroupings));
+        setFamiliesText(familiesToCsv(cfg.productFamilies));
         setLoading(false);
       })
       .catch((err) => {
@@ -101,8 +101,8 @@ function SettingsContent() {
         body: JSON.stringify({
           accountId,
           patch: {
-            channels: config.channels,
-            productGroupings: parseGroupingsCsv(groupingsText),
+            audiences: config.audiences,
+            productFamilies: parseFamiliesCsv(familiesText),
             cohortGranularity: config.cohortGranularity,
             lookbackMonths: config.lookbackMonths,
             excludeRefunds: config.excludeRefunds,
@@ -114,7 +114,7 @@ function SettingsContent() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Save failed");
       setConfig(data);
-      setGroupingsText(groupingsToCsv(data.productGroupings));
+      setFamiliesText(familiesToCsv(data.productFamilies));
       setSaveMessage({ type: "ok", text: "Saved." });
     } catch (err) {
       setSaveMessage({
@@ -169,31 +169,31 @@ function SettingsContent() {
   const updateConfig = (patch: Partial<BrandConfig>) =>
     setConfig((c) => (c ? { ...c, ...patch } : c));
 
-  const addChannel = () => {
-    const id = `channel_${Date.now()}`;
+  const addAudience = () => {
+    const id = `audience_${Date.now()}`;
     updateConfig({
-      channels: [
-        ...config.channels,
-        { id, label: "New channel", rule: { type: "list", listId: "" } },
+      audiences: [
+        ...config.audiences,
+        { id, label: "New audience", rule: { type: "list", listId: "" } },
       ],
     });
   };
 
-  const updateChannel = (index: number, patch: Partial<ChannelDefinition>) => {
-    const next = config.channels.map((ch, i) => (i === index ? { ...ch, ...patch } : ch));
-    updateConfig({ channels: next });
+  const updateAudience = (index: number, patch: Partial<AudienceDefinition>) => {
+    const next = config.audiences.map((a, i) => (i === index ? { ...a, ...patch } : a));
+    updateConfig({ audiences: next });
   };
 
-  const moveChannel = (index: number, dir: -1 | 1) => {
+  const moveAudience = (index: number, dir: -1 | 1) => {
     const target = index + dir;
-    if (target < 0 || target >= config.channels.length) return;
-    const next = [...config.channels];
+    if (target < 0 || target >= config.audiences.length) return;
+    const next = [...config.audiences];
     [next[index], next[target]] = [next[target], next[index]];
-    updateConfig({ channels: next });
+    updateConfig({ audiences: next });
   };
 
-  const removeChannel = (index: number) => {
-    updateConfig({ channels: config.channels.filter((_, i) => i !== index) });
+  const removeAudience = (index: number) => {
+    updateConfig({ audiences: config.audiences.filter((_, i) => i !== index) });
   };
 
   return (
@@ -213,63 +213,99 @@ function SettingsContent() {
         </a>
       </div>
 
-      {/* ── Channels ── */}
+      {/* ── Audiences ── */}
       <section className="card p-5 sm:p-6 mb-5">
         <div className="flex items-center justify-between gap-4 mb-2">
-          <h2 className="text-base sm:text-lg font-semibold">Channels</h2>
+          <h2 className="text-base sm:text-lg font-semibold">Audiences</h2>
           <button
-            onClick={addChannel}
+            onClick={addAudience}
             className="px-3 py-1.5 text-xs font-medium rounded-lg border border-dashed border-[var(--card-border)] text-[var(--muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-all"
           >
-            + Add channel
+            + Add audience
           </button>
         </div>
-        <p className="text-xs text-[var(--muted)] mb-4">
-          Customers are assigned to the first matching channel in this order. Unmatched customers
-          appear as &quot;Unassigned&quot; in every chart.
-        </p>
+        <div className="text-xs text-[var(--muted)] space-y-1 mb-4">
+          <p>
+            An audience is a named group of customers (e.g. <em>DTC</em>, <em>Affiliate</em>,{" "}
+            <em>B2B</em>). Every metric on the Cohorts tab gets split by audience, so you can
+            compare repeat rates, time-between-orders, and product paths across them.
+          </p>
+          <p>
+            <strong className="text-[var(--foreground)]">First match wins.</strong> Customers are
+            assigned to the first audience they match in this order — so put narrower audiences
+            (e.g. VIP) above broader ones (e.g. DTC). Anyone matching none shows up as{" "}
+            <em>Unassigned</em>.
+          </p>
+        </div>
 
-        {config.channels.length === 0 && (
+        {config.audiences.length === 0 && (
           <p className="text-sm text-[var(--muted)] italic">
-            No channels defined. Add at least one to split metrics by channel. Without channels,
-            all metrics will show the &quot;Combined&quot; view only.
+            No audiences yet. Add at least one to unlock per-audience charts. Without audiences,
+            every customer lands in Unassigned and charts only show the Combined view.
           </p>
         )}
 
         <div className="space-y-3">
-          {config.channels.map((ch, idx) => (
-            <ChannelRow
-              key={ch.id}
-              channel={ch}
+          {config.audiences.map((a, idx) => (
+            <AudienceRow
+              key={a.id}
+              audience={a}
               discovery={discovery}
               isFirst={idx === 0}
-              isLast={idx === config.channels.length - 1}
-              onChange={(patch) => updateChannel(idx, patch)}
-              onMoveUp={() => moveChannel(idx, -1)}
-              onMoveDown={() => moveChannel(idx, 1)}
-              onRemove={() => removeChannel(idx)}
+              isLast={idx === config.audiences.length - 1}
+              onChange={(patch) => updateAudience(idx, patch)}
+              onMoveUp={() => moveAudience(idx, -1)}
+              onMoveDown={() => moveAudience(idx, 1)}
+              onRemove={() => removeAudience(idx)}
             />
           ))}
         </div>
       </section>
 
-      {/* ── Product groupings ── */}
+      {/* ── Product families ── */}
       <section className="card p-5 sm:p-6 mb-5">
-        <h2 className="text-base sm:text-lg font-semibold mb-2">Product groupings</h2>
-        <p className="text-xs text-[var(--muted)] mb-4">
-          Optional. Paste CSV mapping products to lines: each row is{" "}
-          <code className="text-[var(--foreground)] bg-[var(--card-border)]/40 px-1 rounded">
-            key,line
-          </code>{" "}
-          where key is a product id, SKU, or exact product name. Blank &rarr; per-SKU analysis.
-        </p>
+        <h2 className="text-base sm:text-lg font-semibold mb-2">Product families</h2>
+        <div className="text-xs text-[var(--muted)] space-y-1 mb-4">
+          <p>
+            <em>Optional.</em> Collapse many SKUs into a smaller number of families so charts
+            read at a glance. For example, with 20 different cleanse SKUs mapped to{" "}
+            <em>Cleanse</em>, the product-path matrix shows{" "}
+            <strong className="text-[var(--foreground)]">&quot;Cleanse&nbsp;→&nbsp;Cleanse 42%&quot;</strong>{" "}
+            instead of a 20×20 grid of individual SKU names.
+          </p>
+          <p>
+            Paste CSV rows below, one per line:{" "}
+            <code className="text-[var(--foreground)] bg-[var(--card-border)]/40 px-1 rounded">
+              product_id,family
+            </code>{" "}
+            or{" "}
+            <code className="text-[var(--foreground)] bg-[var(--card-border)]/40 px-1 rounded">
+              SKU,family
+            </code>{" "}
+            or{" "}
+            <code className="text-[var(--foreground)] bg-[var(--card-border)]/40 px-1 rounded">
+              exact product name,family
+            </code>
+            . Blank = per-SKU analysis (no grouping applied).
+          </p>
+        </div>
         <textarea
-          value={groupingsText}
-          onChange={(e) => setGroupingsText(e.target.value)}
-          placeholder={`gid://shopify/Product/123,Kits\nSKU-ABC,Supplements\nCleanse Starter,Kits`}
-          rows={6}
+          value={familiesText}
+          onChange={(e) => setFamiliesText(e.target.value)}
+          placeholder={`# Example:
+CLEANSE-STARTER,Cleanse
+CLEANSE-ADVANCED,Cleanse
+PROBIOTIC-30,Supplements
+PROBIOTIC-60,Supplements
+# …and so on. Leave blank for per-SKU analysis.`}
+          rows={7}
           className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-[var(--card-border)] bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:border-[var(--accent)]"
         />
+        {familiesText.trim() && (
+          <p className="text-[11px] text-[var(--muted)] mt-2">
+            {parseFamiliesCsv(familiesText)?.familyLabels?.length || 0} families will be applied.
+          </p>
+        )}
       </section>
 
       {/* ── Cohort settings ── */}
@@ -309,7 +345,7 @@ function SettingsContent() {
               className="w-32 px-3 py-2 text-sm rounded-lg border border-[var(--card-border)] bg-[var(--background)] text-[var(--foreground)] focus:outline-none focus:border-[var(--accent)]"
             />
             <p className="text-[11px] text-[var(--muted)] mt-1">
-              Next sync will backfill events older than current earliest if increased.
+              Next sync will backfill events older than the current earliest if increased.
             </p>
           </div>
         </div>
@@ -360,7 +396,7 @@ function SettingsContent() {
           </button>
         </div>
         <p className="text-xs text-[var(--muted)] mb-4">
-          Runs on a sample of cached customers &amp; events. Confirms channel assignment looks
+          Runs on a sample of cached customers &amp; events. Confirms audience assignment looks
           reasonable and whether discount code data is present.
         </p>
 
@@ -368,16 +404,16 @@ function SettingsContent() {
           <div className="space-y-4">
             <div>
               <p className="text-[11px] font-medium text-[var(--muted)] uppercase tracking-wider mb-2">
-                Channel membership (sample n={sanity.sampleSize})
+                Audience membership (sample n={sanity.sampleSize})
               </p>
               <div className="space-y-1.5">
-                {sanity.channels.map((c) => (
-                  <div key={c.id} className="flex items-center justify-between text-sm">
-                    <span className={c.id === "unassigned" ? "text-[var(--warning)]" : ""}>
-                      {c.label}
+                {sanity.audiences.map((a) => (
+                  <div key={a.id} className="flex items-center justify-between text-sm">
+                    <span className={a.id === "unassigned" ? "text-[var(--warning)]" : ""}>
+                      {a.label}
                     </span>
                     <span className="text-[var(--muted)] font-mono">
-                      {c.sampleMemberCount} customers
+                      {a.sampleMemberCount} customers
                     </span>
                   </div>
                 ))}
@@ -430,7 +466,7 @@ function SettingsContent() {
               {saveMessage.text}
             </span>
           ) : (
-            <>Changes are applied to the next analysis run.</>
+            <>Changes are applied on the next analysis run.</>
           )}
         </div>
         <button
@@ -449,8 +485,8 @@ function SettingsContent() {
 // Subcomponents
 // ─────────────────────────────────────────────────────────────
 
-function ChannelRow({
-  channel,
+function AudienceRow({
+  audience,
   discovery,
   isFirst,
   isLast,
@@ -459,18 +495,18 @@ function ChannelRow({
   onMoveDown,
   onRemove,
 }: {
-  channel: ChannelDefinition;
+  audience: AudienceDefinition;
   discovery: Discovery | null;
   isFirst: boolean;
   isLast: boolean;
-  onChange: (patch: Partial<ChannelDefinition>) => void;
+  onChange: (patch: Partial<AudienceDefinition>) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
   onRemove: () => void;
 }) {
-  const ruleType = channel.rule.type;
+  const ruleType = audience.rule.type;
 
-  const setRuleType = (type: ChannelRule["type"]) => {
+  const setRuleType = (type: AudienceRule["type"]) => {
     if (type === "list") onChange({ rule: { type: "list", listId: "" } });
     else if (type === "klaviyo_segment") onChange({ rule: { type: "klaviyo_segment", segmentId: "" } });
     else
@@ -502,14 +538,14 @@ function ChannelRow({
         </div>
         <input
           type="text"
-          value={channel.label}
+          value={audience.label}
           onChange={(e) => onChange({ label: e.target.value })}
           placeholder="Label (e.g. DTC, Affiliate)"
           className="flex-1 px-3 py-1.5 text-sm font-medium rounded border border-[var(--card-border)] bg-[var(--background)] focus:outline-none focus:border-[var(--accent)]"
         />
         <input
           type="text"
-          value={channel.id}
+          value={audience.id}
           onChange={(e) => onChange({ id: e.target.value })}
           placeholder="id"
           className="w-32 px-3 py-1.5 text-xs font-mono rounded border border-[var(--card-border)] bg-[var(--background)] text-[var(--muted)] focus:outline-none focus:border-[var(--accent)]"
@@ -518,7 +554,7 @@ function ChannelRow({
         <button
           onClick={onRemove}
           className="text-[var(--muted)] hover:text-[var(--danger)] px-1.5"
-          title="Remove channel"
+          title="Remove audience"
         >
           ×
         </button>
@@ -538,14 +574,14 @@ function ChannelRow({
                 : "border-[var(--card-border)] text-[var(--muted)]"
             }`}
           >
-            {t === "list" ? "List" : t === "klaviyo_segment" ? "Klaviyo segment" : "Rule"}
+            {t === "list" ? "Klaviyo list" : t === "klaviyo_segment" ? "Klaviyo segment" : "Custom rule"}
           </button>
         ))}
       </div>
 
       {ruleType === "list" && (
         <select
-          value={channel.rule.listId || ""}
+          value={audience.rule.listId || ""}
           onChange={(e) => onChange({ rule: { type: "list", listId: e.target.value } })}
           className="w-full px-3 py-2 text-sm rounded border border-[var(--card-border)] bg-[var(--background)] focus:outline-none focus:border-[var(--accent)]"
         >
@@ -560,7 +596,7 @@ function ChannelRow({
 
       {ruleType === "klaviyo_segment" && (
         <select
-          value={channel.rule.segmentId || ""}
+          value={audience.rule.segmentId || ""}
           onChange={(e) =>
             onChange({ rule: { type: "klaviyo_segment", segmentId: e.target.value } })
           }
@@ -577,7 +613,7 @@ function ChannelRow({
 
       {ruleType === "segment" && (
         <RuleBuilder
-          rules={channel.rule.rules || []}
+          rules={audience.rule.rules || []}
           discovery={discovery}
           onChange={(rules) => onChange({ rule: { type: "segment", rules } })}
         />
@@ -607,7 +643,7 @@ function RuleBuilder({
   return (
     <div className="space-y-2">
       <p className="text-[11px] text-[var(--muted)]">
-        All rules must match (AND). Supported operators: equals, contains, not_equals, in_list,
+        All conditions must match (AND). Operators: equals, contains, not_equals, in_list,
         in_segment, not_in_list, not_in_segment.
       </p>
       {rules.map((rule, i) => (
@@ -659,7 +695,7 @@ function RuleBuilder({
             <button
               onClick={() => removeRule(i)}
               className="text-[var(--muted)] hover:text-[var(--danger)]"
-              title="Remove rule"
+              title="Remove condition"
             >
               ×
             </button>
@@ -670,7 +706,7 @@ function RuleBuilder({
         onClick={addRule}
         className="text-[11px] text-[var(--accent)] hover:underline"
       >
-        + Add rule
+        + Add condition
       </button>
     </div>
   );
@@ -680,22 +716,22 @@ function RuleBuilder({
 // Helpers
 // ─────────────────────────────────────────────────────────────
 
-function groupingsToCsv(grouping: ProductGroupings | null): string {
-  if (!grouping) return "";
+function familiesToCsv(families: ProductFamilies | null): string {
+  if (!families) return "";
   const rows: string[] = [];
-  for (const [k, v] of Object.entries(grouping.byProductId || {})) rows.push(`${k},${v}`);
-  for (const [k, v] of Object.entries(grouping.bySku || {})) rows.push(`${k},${v}`);
-  for (const [k, v] of Object.entries(grouping.byProductName || {})) rows.push(`${k},${v}`);
+  for (const [k, v] of Object.entries(families.byProductId || {})) rows.push(`${k},${v}`);
+  for (const [k, v] of Object.entries(families.bySku || {})) rows.push(`${k},${v}`);
+  for (const [k, v] of Object.entries(families.byProductName || {})) rows.push(`${k},${v}`);
   return rows.join("\n");
 }
 
 /**
- * Parse "key,line" CSV into a grouping. Heuristic:
+ * Parse "key,family" CSV into a ProductFamilies object. Heuristic:
  *  - key starts with "gid://" or is all-numeric → byProductId
- *  - else if contains no spaces and is short → bySku
+ *  - else if no spaces and short → bySku
  *  - else → byProductName
  */
-function parseGroupingsCsv(text: string): ProductGroupings | null {
+function parseFamiliesCsv(text: string): ProductFamilies | null {
   const lines = text
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -728,7 +764,7 @@ function parseGroupingsCsv(text: string): ProductGroupings | null {
     Object.keys(byProductName).length;
   if (!hasAny) return null;
 
-  const lineLabels = Array.from(
+  const familyLabels = Array.from(
     new Set([
       ...Object.values(byProductId),
       ...Object.values(bySku),
@@ -740,7 +776,7 @@ function parseGroupingsCsv(text: string): ProductGroupings | null {
     ...(Object.keys(byProductId).length && { byProductId }),
     ...(Object.keys(bySku).length && { bySku }),
     ...(Object.keys(byProductName).length && { byProductName }),
-    lineLabels,
+    familyLabels,
   };
 }
 

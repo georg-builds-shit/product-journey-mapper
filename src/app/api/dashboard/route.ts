@@ -69,7 +69,7 @@ export async function GET(request: NextRequest) {
     customerJourneys: run.customerJourneysJson || null,
     // Cohort & repeat-purchase analytics (Phase 4 — loyalty module)
     cohortAnalytics: run.cohortAnalyticsJson || null,
-    channelsSnapshot: run.channelsSnapshotJson || null,
+    audiencesSnapshot: run.audiencesSnapshotJson || null,
     configSnapshot: run.configSnapshotJson || null,
   });
 }

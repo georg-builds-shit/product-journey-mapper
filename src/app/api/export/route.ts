@@ -7,12 +7,14 @@ import { requireAuth } from "@/lib/auth";
 const COMBINED = "__combined__";
 
 /**
- * GET /api/export?accountId=X&metric=Y[&runId=Z][&channel=C]
+ * GET /api/export?accountId=X&metric=Y[&runId=Z][&audience=A]
  *
  * Streams CSV. Metric keys:
  *   cohort-curves, time-between-orders, first-to-second-matrix,
- *   order-count-distribution, discount-code-usage, cross-channel,
+ *   order-count-distribution, discount-code-usage, cross-audience,
  *   stickiness, repurchase-timing, cohort-retention
+ *
+ * The legacy `channel` query param is still accepted for backward compat.
  */
 export async function GET(request: NextRequest) {
   const authError = requireAuth(request);
@@ -21,7 +23,10 @@ export async function GET(request: NextRequest) {
   const accountId = request.nextUrl.searchParams.get("accountId");
   const metric = request.nextUrl.searchParams.get("metric");
   const runIdParam = request.nextUrl.searchParams.get("runId");
-  const channel = request.nextUrl.searchParams.get("channel") || COMBINED;
+  const audience =
+    request.nextUrl.searchParams.get("audience") ||
+    request.nextUrl.searchParams.get("channel") ||
+    COMBINED;
 
   if (!accountId || !metric) {
     return NextResponse.json({ error: "accountId and metric required" }, { status: 400 });
@@ -53,18 +58,20 @@ export async function GET(request: NextRequest) {
   const analytics = run.cohortAnalyticsJson as any;
 
   const serializers: Record<string, () => string> = {
-    "cohort-curves": () => serializeCohortCurves(pickSlice(analytics?.cohortCurves, channel)),
+    "cohort-curves": () => serializeCohortCurves(pickSlice(analytics?.cohortCurves, audience)),
     "time-between-orders": () =>
-      serializeTimeBetweenOrders(pickSlice(analytics?.timeBetweenOrders, channel)),
+      serializeTimeBetweenOrders(pickSlice(analytics?.timeBetweenOrders, audience)),
     "first-to-second-matrix": () =>
-      serializeFirstToSecondMatrix(pickSlice(analytics?.firstToSecondMatrix, channel)),
+      serializeFirstToSecondMatrix(pickSlice(analytics?.firstToSecondMatrix, audience)),
     "order-count-distribution": () =>
       serializeOrderCountDistribution(
-        pickSlice(analytics?.orderCountDistribution, channel)
+        pickSlice(analytics?.orderCountDistribution, audience)
       ),
     "discount-code-usage": () =>
-      serializeDiscountCodeUsage(pickSlice(analytics?.discountCodeUsage, channel)),
-    "cross-channel": () => serializeCrossChannel(analytics?.crossChannel),
+      serializeDiscountCodeUsage(pickSlice(analytics?.discountCodeUsage, audience)),
+    "cross-audience": () => serializeCrossAudience(analytics?.crossAudience),
+    // legacy key — same data under the old name
+    "cross-channel": () => serializeCrossAudience(analytics?.crossAudience),
     stickiness: () => serializeStickiness(run.stickinessJson as any[]),
     "repurchase-timing": () => serializeRepurchaseTiming(run.repurchaseTimingJson as any[]),
     "cohort-retention": () => serializeCohortRetention(run.cohortRetentionJson as any[]),
@@ -83,7 +90,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 
-  const filename = `${metric}${channel !== COMBINED ? `-${channel}` : ""}-${runId.slice(0, 8)}.csv`;
+  const filename = `${metric}${audience !== COMBINED ? `-${audience}` : ""}-${runId.slice(0, 8)}.csv`;
   return new NextResponse(body, {
     status: 200,
     headers: {
@@ -98,12 +105,12 @@ export async function GET(request: NextRequest) {
 // ─────────────────────────────────────────────────────────────
 
 function pickSlice<T>(
-  metric: { combined: T; perChannel: Record<string, T> } | undefined,
-  channel: string
+  metric: { combined: T; perAudience: Record<string, T> } | undefined,
+  audience: string
 ): T | null {
   if (!metric) return null;
-  if (channel === COMBINED) return metric.combined;
-  return metric.perChannel?.[channel] ?? null;
+  if (audience === COMBINED) return metric.combined;
+  return metric.perAudience?.[audience] ?? null;
 }
 
 function escapeCsv(value: unknown): string {
@@ -260,13 +267,13 @@ function serializeDiscountCodeUsage(data: any): string {
   return toCsv(rows);
 }
 
-function serializeCrossChannel(data: any): string {
-  if (!data) return empty("channel,repeat_customers,cross_count,cross_pct");
+function serializeCrossAudience(data: any): string {
+  if (!data) return empty("audience,repeat_customers,cross_count,cross_pct");
   const rows: Array<Array<unknown>> = [
-    ["channel", "repeat_customers", "cross_count", "cross_pct"],
-    ["__total__", data.totalRepeatCustomers, data.crossChannelCount, data.crossChannelPct.toFixed(2)],
+    ["audience", "repeat_customers", "cross_count", "cross_pct"],
+    ["__total__", data.totalRepeatCustomers, data.crossAudienceCount, data.crossAudiencePct.toFixed(2)],
   ];
-  for (const [id, entry] of Object.entries(data.perOriginChannel || {})) {
+  for (const [id, entry] of Object.entries(data.perOriginAudience || {})) {
     const e = entry as { repeatCustomers: number; crossCount: number; crossPct: number };
     rows.push([id, e.repeatCustomers, e.crossCount, e.crossPct.toFixed(2)]);
   }

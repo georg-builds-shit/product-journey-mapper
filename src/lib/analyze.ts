@@ -31,7 +31,7 @@ import {
 import type { OrderedProductEvent } from "./klaviyo";
 import { getBrandConfig } from "./config";
 import {
-  classifyChannels,
+  classifyAudiences,
   classifyAllMatches,
   collectMembershipRefs,
 } from "./channel-classify";
@@ -305,22 +305,22 @@ export async function runJourneyAnalysis(
     const productAffinity = calculateProductAffinity(sequences);
     const customerJourneys = buildCustomerJourneys(sequences);
 
-    // ── Cohort & repeat-purchase analytics (channel-splittable) ──
+    // ── Cohort & repeat-purchase analytics (audience-splittable) ──
     // Runs alongside existing metrics so the dashboard response stays a
     // single run. Failures here should not lose the rest of the analysis.
     let cohortAnalytics: any = null;
-    let channelsSnapshot: any = null;
+    let audiencesSnapshot: any = null;
     let configSnapshot: any = null;
     try {
       const config = await getBrandConfig(accountId);
-      channelsSnapshot = config.channels;
+      audiencesSnapshot = config.audiences;
       configSnapshot = {
         cohortGranularity: config.cohortGranularity,
         lookbackMonths: config.lookbackMonths,
         excludeRefunds: config.excludeRefunds,
         minOrderValue: config.minOrderValue,
         excludeTestRules: config.excludeTestRules,
-        productGroupings: config.productGroupings,
+        productFamilies: config.productFamilies,
       };
 
       // Apply order-level filters: min value + refunds (if excludeRefunds, drop value<=0)
@@ -367,8 +367,8 @@ export async function runJourneyAnalysis(
         }
       }
 
-      // Fetch list/segment membership for every channel rule + test-rule reference.
-      const channelRefs = collectMembershipRefs(config.channels);
+      // Fetch list/segment membership for every audience rule + test-rule reference.
+      const audienceRefs = collectMembershipRefs(config.audiences);
       const testRefs = collectMembershipRefs([
         {
           id: "__test__",
@@ -377,10 +377,10 @@ export async function runJourneyAnalysis(
         },
       ]);
       const allListIds = Array.from(
-        new Set([...channelRefs.listIds, ...testRefs.listIds])
+        new Set([...audienceRefs.listIds, ...testRefs.listIds])
       );
       const allSegmentIds = Array.from(
-        new Set([...channelRefs.segmentIds, ...testRefs.segmentIds])
+        new Set([...audienceRefs.segmentIds, ...testRefs.segmentIds])
       );
 
       for (const listId of allListIds) {
@@ -432,16 +432,16 @@ export async function runJourneyAnalysis(
         filteredEvents = filteredEvents.filter((e) => !excluded.has(e.profileId));
       }
 
-      const channelMap = classifyChannels(profiles, config.channels);
-      const allMatchesMap = classifyAllMatches(profiles, config.channels);
+      const audienceMap = classifyAudiences(profiles, config.audiences);
+      const allMatchesMap = classifyAllMatches(profiles, config.audiences);
 
       cohortAnalytics = computeCohortAnalytics({
         events: filteredEvents,
-        channelMap,
+        audienceMap,
         allMatchesMap,
-        channels: config.channels,
+        audiences: config.audiences,
         granularity: config.cohortGranularity,
-        grouping: config.productGroupings,
+        families: config.productFamilies,
       });
     } catch (err) {
       console.error("Cohort analytics computation failed:", err);
@@ -472,7 +472,7 @@ export async function runJourneyAnalysis(
         productAffinityJson: productAffinity,
         customerJourneysJson: customerJourneys,
         cohortAnalyticsJson: cohortAnalytics,
-        channelsSnapshotJson: channelsSnapshot,
+        audiencesSnapshotJson: audiencesSnapshot,
         configSnapshotJson: configSnapshot,
         completedAt: new Date(),
       })

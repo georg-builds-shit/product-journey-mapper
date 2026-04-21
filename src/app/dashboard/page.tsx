@@ -13,19 +13,19 @@ import RevenueConcentration from "@/components/RevenueConcentration";
 import CohortTable from "@/components/CohortTable";
 import AffinityMatrix from "@/components/AffinityMatrix";
 import JourneyExplorer from "@/components/JourneyExplorer";
-import ChannelSelector from "@/components/ChannelSelector";
+import AudienceSelector from "@/components/AudienceSelector";
 import CohortCurves from "@/components/CohortCurves";
 import TimeBetweenOrders from "@/components/TimeBetweenOrders";
 import FirstToSecondMatrix from "@/components/FirstToSecondMatrix";
 import OrderCountDistribution from "@/components/OrderCountDistribution";
 import DiscountCodeUsage from "@/components/DiscountCodeUsage";
-import CrossChannelTile from "@/components/CrossChannelTile";
+import CrossAudienceTile from "@/components/CrossAudienceTile";
 import { ChatButton, ChatPanel } from "@/components/chat";
 import { useChat } from "@/hooks/useChat";
 import { useIsMobile } from "@/hooks/useIsMobile";
 
-const COMBINED_CHANNEL_ID = "__combined__";
-const UNASSIGNED_CHANNEL_ID = "unassigned";
+const COMBINED_AUDIENCE_ID = "__combined__";
+const UNASSIGNED_AUDIENCE_ID = "unassigned";
 
 interface AnalysisStatus {
   runId?: string;
@@ -49,54 +49,54 @@ interface DashboardData {
   productAffinity: any[] | null;
   customerJourneys: any[] | null;
   cohortAnalytics: CohortAnalytics | null;
-  channelsSnapshot: any[] | null;
+  audiencesSnapshot: any[] | null;
   configSnapshot: any | null;
 }
 
 // Shape mirrors CohortAnalyticsOutput in src/lib/cohort-analysis.ts
 interface CohortAnalytics {
-  cohortCurves: { combined: any; perChannel: Record<string, any> };
-  timeBetweenOrders: { combined: any; perChannel: Record<string, any> };
-  firstToSecondMatrix: { combined: any; perChannel: Record<string, any> };
-  orderCountDistribution: { combined: any; perChannel: Record<string, any> };
-  discountCodeUsage: { combined: any; perChannel: Record<string, any> };
-  crossChannel: any;
+  cohortCurves: { combined: any; perAudience: Record<string, any> };
+  timeBetweenOrders: { combined: any; perAudience: Record<string, any> };
+  firstToSecondMatrix: { combined: any; perAudience: Record<string, any> };
+  orderCountDistribution: { combined: any; perAudience: Record<string, any> };
+  discountCodeUsage: { combined: any; perAudience: Record<string, any> };
+  crossAudience: any;
   unassignedSize: number;
   warnings: string[];
-  channelLabels: Array<{ id: string; label: string }>;
+  audienceLabels: Array<{ id: string; label: string }>;
 }
 
 /**
- * Pick the right slice of a per-channel metric based on the selected channel.
+ * Pick the right slice of a per-audience metric based on the selected audience.
  */
-function pickChannelSlice<T>(
-  result: { combined: T; perChannel: Record<string, T> } | null | undefined,
-  channelId: string
+function pickAudienceSlice<T>(
+  result: { combined: T; perAudience: Record<string, T> } | null | undefined,
+  audienceId: string
 ): T | null {
   if (!result) return null;
-  if (channelId === COMBINED_CHANNEL_ID) return result.combined;
-  return result.perChannel[channelId] ?? null;
+  if (audienceId === COMBINED_AUDIENCE_ID) return result.combined;
+  return result.perAudience[audienceId] ?? null;
 }
 
 /**
- * Build the option list for the global channel selector. Always include
- * "Combined" first; include every configured channel; include "Unassigned"
+ * Build the option list for the global audience selector. Always include
+ * "Combined" first; include every configured audience; include "Unassigned"
  * only if any customer landed there.
  */
-function buildChannelOptions(cohortAnalytics: CohortAnalytics) {
+function buildAudienceOptions(cohortAnalytics: CohortAnalytics) {
   const options: Array<{ id: string; label: string; count?: number }> = [
     {
-      id: COMBINED_CHANNEL_ID,
+      id: COMBINED_AUDIENCE_ID,
       label: "Combined",
       count: cohortAnalytics.cohortCurves?.combined?.totalCustomers,
     },
   ];
-  for (const ch of cohortAnalytics.channelLabels) {
-    if (ch.id === UNASSIGNED_CHANNEL_ID && cohortAnalytics.unassignedSize === 0) continue;
+  for (const a of cohortAnalytics.audienceLabels) {
+    if (a.id === UNASSIGNED_AUDIENCE_ID && cohortAnalytics.unassignedSize === 0) continue;
     options.push({
-      id: ch.id,
-      label: ch.label,
-      count: cohortAnalytics.cohortCurves?.perChannel?.[ch.id]?.totalCustomers,
+      id: a.id,
+      label: a.label,
+      count: cohortAnalytics.cohortCurves?.perAudience?.[a.id]?.totalCustomers,
     });
   }
   return options;
@@ -157,10 +157,10 @@ function apiHeaders(extra?: Record<string, string>): Record<string, string> {
  * Trigger a CSV download from the export API. Uses the latest completed run
  * implicitly (the API resolves `runId` from `accountId` when omitted).
  */
-function exportCsv(accountId: string | null, metric: string, channelId: string) {
+function exportCsv(accountId: string | null, metric: string, audienceId: string) {
   if (!accountId) return;
   const params = new URLSearchParams({ accountId, metric });
-  if (channelId && channelId !== "__combined__") params.set("channel", channelId);
+  if (audienceId && audienceId !== "__combined__") params.set("audience", audienceId);
   const secret = typeof window !== "undefined"
     ? process.env.NEXT_PUBLIC_APP_SECRET
     : undefined;
@@ -235,7 +235,7 @@ function DashboardContent() {
   const [isReanalyzing, setIsReanalyzing] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [activeSegmentId, setActiveSegmentId] = useState("");
-  const [selectedChannelId, setSelectedChannelId] = useState<string>(COMBINED_CHANNEL_ID);
+  const [selectedAudienceId, setSelectedAudienceId] = useState<string>(COMBINED_AUDIENCE_ID);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const isMobile = useIsMobile();
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -527,10 +527,10 @@ function DashboardContent() {
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <DashboardTabs activeTab={activeTab} onChange={setActiveTab} />
         {!isComparing && data.cohortAnalytics && (activeTab === "cohorts" || activeTab === "retention") && (
-          <ChannelSelector
-            channels={buildChannelOptions(data.cohortAnalytics)}
-            value={selectedChannelId}
-            onChange={setSelectedChannelId}
+          <AudienceSelector
+            audiences={buildAudienceOptions(data.cohortAnalytics)}
+            value={selectedAudienceId}
+            onChange={setSelectedAudienceId}
             className="mb-6"
           />
         )}
@@ -651,12 +651,12 @@ function DashboardContent() {
                 </div>
               )}
 
-              {/* Top tiles: cross-channel + unassigned visibility */}
+              {/* Top tiles: cross-audience + unassigned visibility */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <CrossChannelTile
-                  data={data.cohortAnalytics.crossChannel}
-                  channelLabels={data.cohortAnalytics.channelLabels.filter(
-                    (c) => c.id !== UNASSIGNED_CHANNEL_ID
+                <CrossAudienceTile
+                  data={data.cohortAnalytics.crossAudience}
+                  audienceLabels={data.cohortAnalytics.audienceLabels.filter(
+                    (a) => a.id !== UNASSIGNED_AUDIENCE_ID
                   )}
                 />
                 {data.cohortAnalytics.unassignedSize > 0 && (
@@ -668,7 +668,7 @@ function DashboardContent() {
                       {data.cohortAnalytics.unassignedSize.toLocaleString()}
                     </p>
                     <p className="text-[11px] text-[var(--muted)] mt-1">
-                      Customers matching no configured channel rule. Review channels in{" "}
+                      Customers matching no configured audience. Review audiences in{" "}
                       <a
                         href={`/settings?accountId=${accountId}`}
                         className="text-[var(--accent)] hover:underline"
@@ -682,49 +682,49 @@ function DashboardContent() {
               </div>
 
               <CohortCurves
-                data={pickChannelSlice(data.cohortAnalytics.cohortCurves, selectedChannelId)}
+                data={pickAudienceSlice(data.cohortAnalytics.cohortCurves, selectedAudienceId)}
                 onExport={() =>
-                  exportCsv(accountId, "cohort-curves", selectedChannelId)
+                  exportCsv(accountId, "cohort-curves", selectedAudienceId)
                 }
               />
 
               <TimeBetweenOrders
-                data={pickChannelSlice(
+                data={pickAudienceSlice(
                   data.cohortAnalytics.timeBetweenOrders,
-                  selectedChannelId
+                  selectedAudienceId
                 )}
                 onExport={() =>
-                  exportCsv(accountId, "time-between-orders", selectedChannelId)
+                  exportCsv(accountId, "time-between-orders", selectedAudienceId)
                 }
               />
 
               <FirstToSecondMatrix
-                data={pickChannelSlice(
+                data={pickAudienceSlice(
                   data.cohortAnalytics.firstToSecondMatrix,
-                  selectedChannelId
+                  selectedAudienceId
                 )}
                 onExport={() =>
-                  exportCsv(accountId, "first-to-second-matrix", selectedChannelId)
+                  exportCsv(accountId, "first-to-second-matrix", selectedAudienceId)
                 }
               />
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <OrderCountDistribution
-                  data={pickChannelSlice(
+                  data={pickAudienceSlice(
                     data.cohortAnalytics.orderCountDistribution,
-                    selectedChannelId
+                    selectedAudienceId
                   )}
                   onExport={() =>
-                    exportCsv(accountId, "order-count-distribution", selectedChannelId)
+                    exportCsv(accountId, "order-count-distribution", selectedAudienceId)
                   }
                 />
                 <DiscountCodeUsage
-                  data={pickChannelSlice(
+                  data={pickAudienceSlice(
                     data.cohortAnalytics.discountCodeUsage,
-                    selectedChannelId
+                    selectedAudienceId
                   )}
                   onExport={() =>
-                    exportCsv(accountId, "discount-code-usage", selectedChannelId)
+                    exportCsv(accountId, "discount-code-usage", selectedAudienceId)
                   }
                 />
               </div>

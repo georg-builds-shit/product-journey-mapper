@@ -1,6 +1,6 @@
 import type { OrderedProductEvent } from "./klaviyo";
-import type { ChannelDefinition, ProductGroupings, CohortGranularity } from "./config";
-import { UNASSIGNED_CHANNEL_ID, applyGrouping } from "./config";
+import type { AudienceDefinition, ProductFamilies, CohortGranularity } from "./config";
+import { UNASSIGNED_AUDIENCE_ID, applyFamily } from "./config";
 
 // ─────────────────────────────────────────────────────────────
 // Types
@@ -15,7 +15,7 @@ export interface CohortOrder {
     name: string;
     productId: string | null;
     sku: string | null;
-    line: string; // resolved product line label (falls back to name when no grouping)
+    family: string; // resolved product-family label (falls back to name when no family mapping)
     value: number;
   }>;
 }
@@ -26,9 +26,9 @@ export interface CohortCustomerSequence {
   totalRevenue: number;
 }
 
-export type PerChannelResult<T> = {
+export type PerAudienceResult<T> = {
   combined: T;
-  perChannel: Record<string, T>; // keyed by channel id; includes UNASSIGNED_CHANNEL_ID if present
+  perAudience: Record<string, T>; // keyed by audience id; includes UNASSIGNED_AUDIENCE_ID if present
 };
 
 // ─── Metric 1: cohort retention curves ───
@@ -49,7 +49,7 @@ export interface CohortCurvesData {
   rows: CohortCurveRow[];
   totalCustomers: number;
 }
-export type CohortCurvesResult = PerChannelResult<CohortCurvesData>;
+export type CohortCurvesResult = PerAudienceResult<CohortCurvesData>;
 
 // ─── Metric 2: time between orders ───
 export interface TimeBetweenOrdersBucket {
@@ -65,17 +65,17 @@ export interface TimeBetweenOrdersData {
   perN: TimeBetweenOrdersBucket[];
   totalCustomers: number;
 }
-export type TimeBetweenOrdersResult = PerChannelResult<TimeBetweenOrdersData>;
+export type TimeBetweenOrdersResult = PerAudienceResult<TimeBetweenOrdersData>;
 
 // ─── Metric 3: first → second product matrix ───
 export interface FirstToSecondMatrixData {
-  rowLabels: string[]; // product/line on first order
-  colLabels: string[]; // product/line on second order
+  rowLabels: string[]; // product/family on first order
+  colLabels: string[]; // product/family on second order
   // cells[rowIdx][colIdx] = { count, pct } — pct = count / (row sum) × 100
   cells: Array<Array<{ count: number; pct: number }>>;
   totalRepeaters: number;
 }
-export type FirstToSecondMatrixResult = PerChannelResult<FirstToSecondMatrixData>;
+export type FirstToSecondMatrixResult = PerAudienceResult<FirstToSecondMatrixData>;
 
 // ─── Metric 4: order count distribution + AOV ───
 export interface OrderCountDistributionData {
@@ -83,7 +83,7 @@ export interface OrderCountDistributionData {
   aovByOrderNumber: Array<{ orderNumber: string; mean: number; median: number; sampleSize: number }>;
   totalCustomers: number;
 }
-export type OrderCountDistributionResult = PerChannelResult<OrderCountDistributionData>;
+export type OrderCountDistributionResult = PerAudienceResult<OrderCountDistributionData>;
 
 // ─── Metric 5: discount code usage ───
 export interface DiscountCodeUsageData {
@@ -95,18 +95,20 @@ export interface DiscountCodeUsageData {
   sampleWithCode: number;
   sampleWithoutCode: number;
 }
-export type DiscountCodeUsageResult = PerChannelResult<DiscountCodeUsageData>;
+export type DiscountCodeUsageResult = PerAudienceResult<DiscountCodeUsageData>;
 
-// ─── Metric 7 (we renumbered — #6 engagement deferred): cross-channel ───
-export interface CrossChannelData {
+// ─── Cross-audience tile (stand-alone) ───
+export interface CrossAudienceData {
   totalRepeatCustomers: number;
-  crossChannelCount: number;
-  crossChannelPct: number;
-  // for a channel: how many of its repeat customers have at least one order
-  // on a different channel
-  perOriginChannel?: Record<string, { repeatCustomers: number; crossCount: number; crossPct: number }>;
+  crossAudienceCount: number;
+  crossAudiencePct: number;
+  // per audience: how many of its repeat customers also match at least one other audience
+  perOriginAudience?: Record<
+    string,
+    { repeatCustomers: number; crossCount: number; crossPct: number }
+  >;
 }
-export type CrossChannelResult = CrossChannelData;
+export type CrossAudienceResult = CrossAudienceData;
 
 // ─── Aggregate output ───
 export interface CohortAnalyticsOutput {
@@ -115,24 +117,24 @@ export interface CohortAnalyticsOutput {
   firstToSecondMatrix: FirstToSecondMatrixResult;
   orderCountDistribution: OrderCountDistributionResult;
   discountCodeUsage: DiscountCodeUsageResult;
-  crossChannel: CrossChannelResult;
+  crossAudience: CrossAudienceResult;
   unassignedSize: number;
   warnings: string[];
-  // Echo of channel ids + labels for the UI (so it doesn't need to re-read config)
-  channelLabels: Array<{ id: string; label: string }>;
+  // Echo of audience ids + labels for the UI (so it doesn't need to re-read config)
+  audienceLabels: Array<{ id: string; label: string }>;
 }
 
 export interface CohortAnalyticsInput {
   events: OrderedProductEvent[];
-  // profileId → primary channelId (first-match-wins; missing → unassigned)
-  channelMap: Map<string, string>;
-  // profileId → set of ALL channels the profile matches (for cross-channel detection).
-  // Optional — when omitted, cross-channel count defaults to 0.
+  // profileId → primary audience id (first-match-wins; missing → unassigned)
+  audienceMap: Map<string, string>;
+  // profileId → set of ALL audiences the profile matches (for cross-audience detection).
+  // Optional — when omitted, cross-audience count defaults to 0.
   allMatchesMap?: Map<string, Set<string>>;
-  // ordered list of configured channels (for UI display + per-channel iteration)
-  channels: ChannelDefinition[];
+  // ordered list of configured audiences (for UI display + per-audience iteration)
+  audiences: AudienceDefinition[];
   granularity: CohortGranularity;
-  grouping: ProductGroupings | null;
+  families: ProductFamilies | null;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -140,31 +142,31 @@ export interface CohortAnalyticsInput {
 // ─────────────────────────────────────────────────────────────
 
 export function computeCohortAnalytics(input: CohortAnalyticsInput): CohortAnalyticsOutput {
-  const { events, channelMap, allMatchesMap, channels, granularity, grouping } = input;
+  const { events, audienceMap, allMatchesMap, audiences, granularity, families } = input;
 
-  const sequences = buildCohortSequences(events, grouping);
-  const channelIds = [...channels.map((c) => c.id), UNASSIGNED_CHANNEL_ID];
+  const sequences = buildCohortSequences(events, families);
+  const audienceIds = [...audiences.map((a) => a.id), UNASSIGNED_AUDIENCE_ID];
 
-  // Attach firstOrderChannel to each sequence
-  const sequencesWithChannel = sequences.map((s) => ({
+  // Attach firstOrderAudience to each sequence
+  const sequencesWithAudience = sequences.map((s) => ({
     sequence: s,
-    channel: channelMap.get(s.profileId) ?? UNASSIGNED_CHANNEL_ID,
+    audience: audienceMap.get(s.profileId) ?? UNASSIGNED_AUDIENCE_ID,
   }));
 
-  const unassignedSize = sequencesWithChannel.filter(
-    (s) => s.channel === UNASSIGNED_CHANNEL_ID
+  const unassignedSize = sequencesWithAudience.filter(
+    (s) => s.audience === UNASSIGNED_AUDIENCE_ID
   ).length;
 
-  const cohortCurves = calculateCohortCurves(sequencesWithChannel, channelIds, granularity);
-  const timeBetweenOrders = calculateTimeBetweenOrders(sequencesWithChannel, channelIds);
-  const firstToSecondMatrix = buildFirstToSecondMatrix(sequencesWithChannel, channelIds);
-  const orderCountDistribution = calculateOrderCountDistribution(sequencesWithChannel, channelIds);
-  const discountCodeUsage = calculateDiscountCodeUsage(sequencesWithChannel, channelIds);
-  const crossChannel = calculateCrossChannelCount(
+  const cohortCurves = calculateCohortCurves(sequencesWithAudience, audienceIds, granularity);
+  const timeBetweenOrders = calculateTimeBetweenOrders(sequencesWithAudience, audienceIds);
+  const firstToSecondMatrix = buildFirstToSecondMatrix(sequencesWithAudience, audienceIds);
+  const orderCountDistribution = calculateOrderCountDistribution(sequencesWithAudience, audienceIds);
+  const discountCodeUsage = calculateDiscountCodeUsage(sequencesWithAudience, audienceIds);
+  const crossAudience = calculateCrossAudienceCount(
     sequences,
-    channelMap,
+    audienceMap,
     allMatchesMap,
-    channels
+    audiences
   );
 
   const warnings: string[] = [];
@@ -175,9 +177,9 @@ export function computeCohortAnalytics(input: CohortAnalyticsInput): CohortAnaly
     }
   }
 
-  const channelLabels = [
-    ...channels.map((c) => ({ id: c.id, label: c.label })),
-    { id: UNASSIGNED_CHANNEL_ID, label: "Unassigned" },
+  const audienceLabels = [
+    ...audiences.map((a) => ({ id: a.id, label: a.label })),
+    { id: UNASSIGNED_AUDIENCE_ID, label: "Unassigned" },
   ];
 
   return {
@@ -186,20 +188,20 @@ export function computeCohortAnalytics(input: CohortAnalyticsInput): CohortAnaly
     firstToSecondMatrix,
     orderCountDistribution,
     discountCodeUsage,
-    crossChannel,
+    crossAudience,
     unassignedSize,
     warnings,
-    channelLabels,
+    audienceLabels,
   };
 }
 
 // ─────────────────────────────────────────────────────────────
-// Sequence builder (cohort-aware — preserves productId/sku/line/discountCode)
+// Sequence builder
 // ─────────────────────────────────────────────────────────────
 
 export function buildCohortSequences(
   events: OrderedProductEvent[],
-  grouping: ProductGroupings | null
+  families: ProductFamilies | null
 ): CohortCustomerSequence[] {
   const byProfile = new Map<string, OrderedProductEvent[]>();
   for (const e of events) {
@@ -235,9 +237,9 @@ export function buildCohortSequences(
           name: e.productName,
           productId: e.productId,
           sku: e.sku,
-          line: applyGrouping(
+          family: applyFamily(
             { productId: e.productId, sku: e.sku, productName: e.productName },
-            grouping
+            families
           ),
           value: e.value || 0,
         })),
@@ -260,20 +262,20 @@ export function buildCohortSequences(
 // Metric helpers
 // ─────────────────────────────────────────────────────────────
 
-type WithChannel = { sequence: CohortCustomerSequence; channel: string };
+type WithAudience = { sequence: CohortCustomerSequence; audience: string };
 
-function splitByChannel<T>(
-  sequences: WithChannel[],
-  channelIds: string[],
+function splitByAudience<T>(
+  sequences: WithAudience[],
+  audienceIds: string[],
   compute: (subset: CohortCustomerSequence[]) => T
-): PerChannelResult<T> {
+): PerAudienceResult<T> {
   const combined = compute(sequences.map((s) => s.sequence));
-  const perChannel: Record<string, T> = {};
-  for (const id of channelIds) {
-    const subset = sequences.filter((s) => s.channel === id).map((s) => s.sequence);
-    perChannel[id] = compute(subset);
+  const perAudience: Record<string, T> = {};
+  for (const id of audienceIds) {
+    const subset = sequences.filter((s) => s.audience === id).map((s) => s.sequence);
+    perAudience[id] = compute(subset);
   }
-  return { combined, perChannel };
+  return { combined, perAudience };
 }
 
 function cohortLabel(date: Date, granularity: CohortGranularity): string {
@@ -299,20 +301,18 @@ function percentile(sorted: number[], p: number): number {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Metric 1 — Cohort retention curves (30/60/90/180/365 day × N=2,3,4)
+// Metric 1 — Cohort retention curves
 // ─────────────────────────────────────────────────────────────
 
 function calculateCohortCurves(
-  sequencesWithChannel: WithChannel[],
-  channelIds: string[],
+  sequencesWithAudience: WithAudience[],
+  audienceIds: string[],
   granularity: CohortGranularity
 ): CohortCurvesResult {
-  return splitByChannel(sequencesWithChannel, channelIds, (subset) => {
+  return splitByAudience(sequencesWithAudience, audienceIds, (subset) => {
     const cohorts = new Map<
       string,
-      {
-        customers: Array<{ firstDate: string; orderDates: string[] }>;
-      }
+      { customers: Array<{ firstDate: string; orderDates: string[] }> }
     >();
 
     for (const seq of subset) {
@@ -339,7 +339,7 @@ function calculateCohortCurves(
         const counts = { 30: 0, 60: 0, 90: 0, 180: 0, 365: 0 };
         for (const c of entry.customers) {
           if (c.orderDates.length < n) continue;
-          const nthDate = c.orderDates[n - 1]; // Nth order (0-indexed)
+          const nthDate = c.orderDates[n - 1];
           const days = daysBetween(c.firstDate, nthDate);
           for (const cut of cutoffs) {
             if (days <= cut) counts[cut]++;
@@ -365,12 +365,12 @@ function calculateCohortCurves(
 }
 
 // ─────────────────────────────────────────────────────────────
-// Metric 2 — Time between orders (N=1→2, 2→3, 3→4) with percentiles
+// Metric 2 — Time between orders
 // ─────────────────────────────────────────────────────────────
 
 function calculateTimeBetweenOrders(
-  sequencesWithChannel: WithChannel[],
-  channelIds: string[]
+  sequencesWithAudience: WithAudience[],
+  audienceIds: string[]
 ): TimeBetweenOrdersResult {
   const BUCKETS = [
     { label: "0–7 days", minDays: 0, maxDays: 7 },
@@ -382,7 +382,7 @@ function calculateTimeBetweenOrders(
     { label: "180+ days", minDays: 181, maxDays: Infinity },
   ];
 
-  return splitByChannel(sequencesWithChannel, channelIds, (subset) => {
+  return splitByAudience(sequencesWithAudience, audienceIds, (subset) => {
     const perN: TimeBetweenOrdersBucket[] = [];
     for (const n of [1, 2, 3]) {
       const gaps: number[] = [];
@@ -396,7 +396,7 @@ function calculateTimeBetweenOrders(
         const count = gaps.filter((g) => g >= b.minDays && g <= b.maxDays).length;
         return {
           ...b,
-          maxDays: b.maxDays === Infinity ? 10_000 : b.maxDays, // JSON-serializable
+          maxDays: b.maxDays === Infinity ? 10_000 : b.maxDays,
           count,
           pct: gaps.length > 0 ? (count / gaps.length) * 100 : 0,
         };
@@ -420,43 +420,37 @@ function calculateTimeBetweenOrders(
 // ─────────────────────────────────────────────────────────────
 
 function buildFirstToSecondMatrix(
-  sequencesWithChannel: WithChannel[],
-  channelIds: string[]
+  sequencesWithAudience: WithAudience[],
+  audienceIds: string[]
 ): FirstToSecondMatrixResult {
-  return splitByChannel(sequencesWithChannel, channelIds, (subset) => {
-    // transitions[rowLine][colLine] = count
+  return splitByAudience(sequencesWithAudience, audienceIds, (subset) => {
     const transitions = new Map<string, Map<string, number>>();
     const rowTotals = new Map<string, number>();
-    const allLines = new Set<string>();
     let totalRepeaters = 0;
 
     for (const seq of subset) {
       if (seq.orders.length < 2) continue;
       totalRepeaters++;
-      const firstLines = new Set(seq.orders[0].products.map((p) => p.line));
-      const secondLines = new Set(seq.orders[1].products.map((p) => p.line));
+      const firstFamilies = new Set(seq.orders[0].products.map((p) => p.family));
+      const secondFamilies = new Set(seq.orders[1].products.map((p) => p.family));
 
-      for (const fromLine of firstLines) {
-        allLines.add(fromLine);
-        rowTotals.set(fromLine, (rowTotals.get(fromLine) || 0) + 1);
-        if (!transitions.has(fromLine)) transitions.set(fromLine, new Map());
-        const inner = transitions.get(fromLine)!;
-        for (const toLine of secondLines) {
-          allLines.add(toLine);
-          inner.set(toLine, (inner.get(toLine) || 0) + 1);
+      for (const fromFamily of firstFamilies) {
+        rowTotals.set(fromFamily, (rowTotals.get(fromFamily) || 0) + 1);
+        if (!transitions.has(fromFamily)) transitions.set(fromFamily, new Map());
+        const inner = transitions.get(fromFamily)!;
+        for (const toFamily of secondFamilies) {
+          inner.set(toFamily, (inner.get(toFamily) || 0) + 1);
         }
       }
     }
 
-    // Sort row labels by how many customers had them as first-line (desc),
-    // and col labels by total arrivals across all rows (desc).
     const rowLabels = Array.from(rowTotals.entries())
       .sort((a, b) => b[1] - a[1])
       .map(([label]) => label);
     const colArrivals = new Map<string, number>();
     for (const inner of transitions.values()) {
-      for (const [toLine, count] of inner) {
-        colArrivals.set(toLine, (colArrivals.get(toLine) || 0) + count);
+      for (const [toFamily, count] of inner) {
+        colArrivals.set(toFamily, (colArrivals.get(toFamily) || 0) + count);
       }
     }
     const colLabels = Array.from(colArrivals.entries())
@@ -477,16 +471,15 @@ function buildFirstToSecondMatrix(
 }
 
 // ─────────────────────────────────────────────────────────────
-// Metric 4 — Order count distribution + AOV by order number
+// Metric 4 — Order count distribution + AOV
 // ─────────────────────────────────────────────────────────────
 
 function calculateOrderCountDistribution(
-  sequencesWithChannel: WithChannel[],
-  channelIds: string[]
+  sequencesWithAudience: WithAudience[],
+  audienceIds: string[]
 ): OrderCountDistributionResult {
-  return splitByChannel(sequencesWithChannel, channelIds, (subset) => {
+  return splitByAudience(sequencesWithAudience, audienceIds, (subset) => {
     const buckets = { "1": 0, "2": 0, "3": 0, "4+": 0 };
-    // Per-order-number collected AOV samples
     const aovByOrder: Record<string, number[]> = { "1": [], "2": [], "3": [], "4+": [] };
 
     for (const seq of subset) {
@@ -519,16 +512,16 @@ function calculateOrderCountDistribution(
 }
 
 // ─────────────────────────────────────────────────────────────
-// Metric 5 — First-order discount code usage + repeat rate diff
+// Metric 5 — First-order discount code usage
 // ─────────────────────────────────────────────────────────────
 
 function calculateDiscountCodeUsage(
-  sequencesWithChannel: WithChannel[],
-  channelIds: string[]
+  sequencesWithAudience: WithAudience[],
+  audienceIds: string[]
 ): DiscountCodeUsageResult {
   const ONE_YEAR_MS = 365 * 86_400_000;
 
-  return splitByChannel(sequencesWithChannel, channelIds, (subset) => {
+  return splitByAudience(sequencesWithAudience, audienceIds, (subset) => {
     if (subset.length === 0) {
       return {
         available: false,
@@ -580,63 +573,56 @@ function calculateDiscountCodeUsage(
 }
 
 // ─────────────────────────────────────────────────────────────
-// Metric 7 — Cross-channel customer count (stand-alone tile)
+// Cross-audience customer count
 // ─────────────────────────────────────────────────────────────
 
-function calculateCrossChannelCount(
+function calculateCrossAudienceCount(
   sequences: CohortCustomerSequence[],
-  channelMap: Map<string, string>,
+  audienceMap: Map<string, string>,
   allMatchesMap: Map<string, Set<string>> | undefined,
-  channels: ChannelDefinition[]
-): CrossChannelData {
-  // Cross-channel = a repeat customer whose profile matches ≥2 configured
-  // channels (computed independently of first-match-wins assignment). This
+  audiences: AudienceDefinition[]
+): CrossAudienceData {
+  // Cross-audience = a repeat customer whose profile matches ≥2 configured
+  // audiences (computed independently of first-match-wins assignment). This
   // is a profile-level signal: a customer appearing in both a DTC list and
-  // an Affiliate segment is cross-channel regardless of where their first
+  // an Affiliate segment is cross-audience regardless of where their first
   // order was bucketed.
-  //
-  // Limitation: without per-order channel attribution (utm/source on the
-  // event) we can't say their orders literally happened on different
-  // channels, only that the profile sits in multiple channel definitions.
-  // For most brand configs (channels defined by list/segment membership
-  // that persists across orders) this is the right signal.
-
-  const channelIds = [...channels.map((c) => c.id), UNASSIGNED_CHANNEL_ID];
+  const audienceIds = [...audiences.map((a) => a.id), UNASSIGNED_AUDIENCE_ID];
   const repeatCustomers = sequences.filter((s) => s.orders.length >= 2);
   const totalRepeatCustomers = repeatCustomers.length;
 
-  let crossChannelCount = 0;
-  const perOriginChannel: Record<
+  let crossAudienceCount = 0;
+  const perOriginAudience: Record<
     string,
     { repeatCustomers: number; crossCount: number; crossPct: number }
   > = {};
-  for (const id of channelIds) {
-    perOriginChannel[id] = { repeatCustomers: 0, crossCount: 0, crossPct: 0 };
+  for (const id of audienceIds) {
+    perOriginAudience[id] = { repeatCustomers: 0, crossCount: 0, crossPct: 0 };
   }
 
   for (const seq of repeatCustomers) {
-    const originChannel = channelMap.get(seq.profileId) ?? UNASSIGNED_CHANNEL_ID;
-    perOriginChannel[originChannel].repeatCustomers++;
+    const origin = audienceMap.get(seq.profileId) ?? UNASSIGNED_AUDIENCE_ID;
+    perOriginAudience[origin].repeatCustomers++;
 
     const matches = allMatchesMap?.get(seq.profileId);
-    const isCrossChannel = !!matches && matches.size > 1;
-    if (isCrossChannel) {
-      crossChannelCount++;
-      perOriginChannel[originChannel].crossCount++;
+    const isCross = !!matches && matches.size > 1;
+    if (isCross) {
+      crossAudienceCount++;
+      perOriginAudience[origin].crossCount++;
     }
   }
 
-  for (const id of channelIds) {
-    const bucket = perOriginChannel[id];
+  for (const id of audienceIds) {
+    const bucket = perOriginAudience[id];
     bucket.crossPct =
       bucket.repeatCustomers > 0 ? (bucket.crossCount / bucket.repeatCustomers) * 100 : 0;
   }
 
   return {
     totalRepeatCustomers,
-    crossChannelCount,
-    crossChannelPct:
-      totalRepeatCustomers > 0 ? (crossChannelCount / totalRepeatCustomers) * 100 : 0,
-    perOriginChannel,
+    crossAudienceCount,
+    crossAudiencePct:
+      totalRepeatCustomers > 0 ? (crossAudienceCount / totalRepeatCustomers) * 100 : 0,
+    perOriginAudience,
   };
 }
