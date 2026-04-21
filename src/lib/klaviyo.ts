@@ -332,12 +332,15 @@ export async function fetchEventsByMetricIds(
   return allEvents;
 }
 
-// Fetch all Klaviyo lists
+// Fetch all Klaviyo lists.
+// profile_count is an "additional-field" — must be opted in explicitly.
+// Default page size is 20; bumping to 100 so big accounts paginate faster.
 export async function fetchLists(
   accessToken: string
 ): Promise<Array<{ id: string; name: string; profileCount: number }>> {
   const lists: Array<{ id: string; name: string; profileCount: number }> = [];
-  let nextUrl: string | null = "https://a.klaviyo.com/api/lists/";
+  let nextUrl: string | null =
+    "https://a.klaviyo.com/api/lists/?page%5Bsize%5D=100&additional-fields%5Blist%5D=profile_count";
 
   while (nextUrl) {
     const res = await fetchWithRetry(nextUrl, {
@@ -367,12 +370,14 @@ export async function fetchLists(
   return lists;
 }
 
-// Fetch all Klaviyo segments (their segments, not ours)
+// Fetch all Klaviyo segments (their segments, not ours).
+// Same treatment: request profile_count as an additional field + page[size]=100.
 export async function fetchKlaviyoSegments(
   accessToken: string
 ): Promise<Array<{ id: string; name: string; profileCount: number }>> {
   const segments: Array<{ id: string; name: string; profileCount: number }> = [];
-  let nextUrl: string | null = "https://a.klaviyo.com/api/segments/";
+  let nextUrl: string | null =
+    "https://a.klaviyo.com/api/segments/?page%5Bsize%5D=100&additional-fields%5Bsegment%5D=profile_count";
 
   while (nextUrl) {
     const res = await fetchWithRetry(nextUrl, {
@@ -383,13 +388,17 @@ export async function fetchKlaviyoSegments(
       },
     });
 
-    if (!res.ok) break;
+    if (!res.ok) {
+      const errBody = await res.text();
+      console.error(`Klaviyo segments fetch failed: ${res.status} — ${errBody}`);
+      break;
+    }
     const body = await res.json();
     for (const s of body.data || []) {
       segments.push({
         id: s.id,
         name: s.attributes?.name || "Unnamed",
-        profileCount: s.attributes?.profile_count || 0,
+        profileCount: s.attributes?.profile_count ?? 0,
       });
     }
     nextUrl = body.links?.next || null;
