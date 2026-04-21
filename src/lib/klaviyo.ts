@@ -337,7 +337,13 @@ export async function fetchEventsByMetricIds(
 // 429'd during the burst and then retry simultaneously, stampeding again.
 // 8-at-a-time keeps us comfortably under the burst limit and lets retries
 // succeed deterministically.
-const ENRICHMENT_CONCURRENCY = 8;
+// Klaviyo's single-object endpoints (e.g. GET /segments/{id}?additional-fields=profile_count)
+// have a much stricter rate limit than the documented 75 req/s baseline — in
+// practice a serial fetch of 5 objects with 300ms spacing still gets ~40% of
+// requests 429'd. Keep concurrency low (4) AND retry more aggressively (6x)
+// per failed item.
+const ENRICHMENT_CONCURRENCY = 4;
+const ENRICHMENT_MAX_RETRIES = 6;
 
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -440,7 +446,8 @@ async function fetchListProfileCount(accessToken: string, listId: string): Promi
           revision: "2025-01-15",
           Accept: "application/json",
         },
-      }
+      },
+      ENRICHMENT_MAX_RETRIES
     );
     if (!res.ok) return 0;
     const body = await res.json();
@@ -460,7 +467,8 @@ async function fetchSegmentProfileCount(accessToken: string, segmentId: string):
           revision: "2025-01-15",
           Accept: "application/json",
         },
-      }
+      },
+      ENRICHMENT_MAX_RETRIES
     );
     if (!res.ok) return 0;
     const body = await res.json();
