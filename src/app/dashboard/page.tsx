@@ -20,6 +20,7 @@ import FirstToSecondMatrix from "@/components/FirstToSecondMatrix";
 import OrderCountDistribution from "@/components/OrderCountDistribution";
 import DiscountCodeUsage from "@/components/DiscountCodeUsage";
 import CrossAudienceTile from "@/components/CrossAudienceTile";
+import ConnectionStatus from "@/components/ConnectionStatus";
 import { ChatButton, ChatPanel } from "@/components/chat";
 import { useChat } from "@/hooks/useChat";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -460,8 +461,11 @@ function DashboardContent() {
     <div className="max-w-[1400px] mx-auto px-4 py-6 sm:px-8 sm:py-8">
       {/* Header */}
       <div className="mb-6">
-        <div className="flex items-start justify-between gap-4">
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Product Journey</h1>
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Product Journey</h1>
+            <ConnectionStatus accountId={accountId} />
+          </div>
           <div className="flex items-center gap-2">
             <a
               href={`/settings?accountId=${accountId}`}

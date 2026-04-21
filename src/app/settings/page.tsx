@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import ConnectionStatus from "@/components/ConnectionStatus";
 
 interface AudienceRule {
   type: "list" | "klaviyo_segment" | "segment";
@@ -198,12 +199,15 @@ function SettingsContent() {
 
   return (
     <div className="max-w-[900px] mx-auto px-4 py-6 sm:px-8 sm:py-8">
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Settings</h1>
-          <p className="text-xs sm:text-sm text-[var(--muted)] mt-1">
-            Per-brand configuration for cohort &amp; repeat-purchase analytics.
-          </p>
+      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div>
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight">Settings</h1>
+            <p className="text-xs sm:text-sm text-[var(--muted)] mt-1">
+              Per-brand configuration for cohort &amp; repeat-purchase analytics.
+            </p>
+          </div>
+          <ConnectionStatus accountId={accountId} />
         </div>
         <a
           href={`/dashboard?accountId=${accountId}`}
