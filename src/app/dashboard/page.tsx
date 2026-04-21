@@ -80,6 +80,74 @@ function pickAudienceSlice<T>(
 }
 
 /**
+ * Wraps a metric component and renders it once per selected audience, stacked
+ * vertically with a header showing the audience name + n. Keeps all related
+ * slices visually grouped so like-for-like comparison is easy.
+ */
+function MetricStack<T>({
+  label,
+  audienceIds,
+  audienceLabels,
+  result,
+  render,
+}: {
+  label: string;
+  audienceIds: string[];
+  audienceLabels: Array<{ id: string; label: string }>;
+  result: { combined: T; perAudience: Record<string, T> } | null | undefined;
+  render: (slice: T | null, audienceId: string) => React.ReactNode;
+}) {
+  const resolveLabel = (id: string): string => {
+    if (id === COMBINED_AUDIENCE_ID) return "Combined";
+    return audienceLabels.find((a) => a.id === id)?.label ?? id;
+  };
+
+  const resolveN = (id: string): number | undefined => {
+    const slice = (id === COMBINED_AUDIENCE_ID ? result?.combined : result?.perAudience?.[id]) as
+      | { totalCustomers?: number; totalRepeaters?: number; totalRepeatCustomers?: number; sampleSize?: number }
+      | null
+      | undefined;
+    return (
+      slice?.totalCustomers ??
+      slice?.totalRepeaters ??
+      slice?.totalRepeatCustomers ??
+      slice?.sampleSize
+    );
+  };
+
+  if (audienceIds.length === 1) {
+    const id = audienceIds[0];
+    return <>{render(pickAudienceSlice(result, id), id)}</>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-sm font-semibold text-[var(--muted)] uppercase tracking-wider">
+        {label}
+      </h2>
+      {audienceIds.map((id) => {
+        const n = resolveN(id);
+        return (
+          <div key={id}>
+            <div className="flex items-baseline gap-2 mb-2">
+              <span className="text-xs font-medium text-[var(--foreground)]">
+                {resolveLabel(id)}
+              </span>
+              {n !== undefined && (
+                <span className="text-[10px] text-[var(--muted)] tabular-nums">
+                  n={n.toLocaleString()}
+                </span>
+              )}
+            </div>
+            {render(pickAudienceSlice(result, id), id)}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
  * Build the option list for the global audience selector. Always include
  * "Combined" first; include every configured audience; include "Unassigned"
  * only if any customer landed there.
@@ -236,7 +304,7 @@ function DashboardContent() {
   const [isReanalyzing, setIsReanalyzing] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [activeSegmentId, setActiveSegmentId] = useState("");
-  const [selectedAudienceId, setSelectedAudienceId] = useState<string>(COMBINED_AUDIENCE_ID);
+  const [selectedAudienceIds, setSelectedAudienceIds] = useState<string[]>([COMBINED_AUDIENCE_ID]);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const isMobile = useIsMobile();
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -365,6 +433,16 @@ function DashboardContent() {
       setFilterDateTo(data.filters.dateTo || "");
     }
   }, [data]);
+
+  // When a new analysis run's cohort data loads, default-select Combined +
+  // every configured audience. User can uncheck to simplify.
+  useEffect(() => {
+    if (!data?.cohortAnalytics) return;
+    const configured = data.cohortAnalytics.audienceLabels
+      .filter((a) => a.id !== UNASSIGNED_AUDIENCE_ID)
+      .map((a) => a.id);
+    setSelectedAudienceIds([COMBINED_AUDIENCE_ID, ...configured]);
+  }, [data?.cohortAnalytics]);
 
   const handleFilterApply = (filters: {
     dateFrom: string;
@@ -530,11 +608,11 @@ function DashboardContent() {
 
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <DashboardTabs activeTab={activeTab} onChange={setActiveTab} />
-        {!isComparing && data.cohortAnalytics && (activeTab === "cohorts" || activeTab === "retention") && (
+        {!isComparing && data.cohortAnalytics && activeTab === "cohorts" && (
           <AudienceSelector
             audiences={buildAudienceOptions(data.cohortAnalytics)}
-            value={selectedAudienceId}
-            onChange={setSelectedAudienceId}
+            selected={selectedAudienceIds}
+            onChange={setSelectedAudienceIds}
             className="mb-6"
           />
         )}
@@ -685,53 +763,90 @@ function DashboardContent() {
                 )}
               </div>
 
-              <CohortCurves
-                data={pickAudienceSlice(data.cohortAnalytics.cohortCurves, selectedAudienceId)}
-                onExport={() =>
-                  exportCsv(accountId, "cohort-curves", selectedAudienceId)
-                }
-              />
+              {selectedAudienceIds.length === 0 ? (
+                <div className="card p-8 text-center text-sm text-[var(--muted)]">
+                  Pick at least one audience above to see its metrics.
+                </div>
+              ) : (
+                <>
+                  <MetricStack
+                    label="Cohort retention curves"
+                    audienceIds={selectedAudienceIds}
+                    audienceLabels={data.cohortAnalytics.audienceLabels}
+                    result={data.cohortAnalytics.cohortCurves}
+                    render={(slice, audienceId) => (
+                      <CohortCurves
+                        data={slice}
+                        onExport={() =>
+                          exportCsv(accountId, "cohort-curves", audienceId)
+                        }
+                      />
+                    )}
+                  />
 
-              <TimeBetweenOrders
-                data={pickAudienceSlice(
-                  data.cohortAnalytics.timeBetweenOrders,
-                  selectedAudienceId
-                )}
-                onExport={() =>
-                  exportCsv(accountId, "time-between-orders", selectedAudienceId)
-                }
-              />
+                  <MetricStack
+                    label="Time between orders"
+                    audienceIds={selectedAudienceIds}
+                    audienceLabels={data.cohortAnalytics.audienceLabels}
+                    result={data.cohortAnalytics.timeBetweenOrders}
+                    render={(slice, audienceId) => (
+                      <TimeBetweenOrders
+                        data={slice}
+                        onExport={() =>
+                          exportCsv(accountId, "time-between-orders", audienceId)
+                        }
+                      />
+                    )}
+                  />
 
-              <FirstToSecondMatrix
-                data={pickAudienceSlice(
-                  data.cohortAnalytics.firstToSecondMatrix,
-                  selectedAudienceId
-                )}
-                onExport={() =>
-                  exportCsv(accountId, "first-to-second-matrix", selectedAudienceId)
-                }
-              />
+                  <MetricStack
+                    label="First → second order product matrix"
+                    audienceIds={selectedAudienceIds}
+                    audienceLabels={data.cohortAnalytics.audienceLabels}
+                    result={data.cohortAnalytics.firstToSecondMatrix}
+                    render={(slice, audienceId) => (
+                      <FirstToSecondMatrix
+                        data={slice}
+                        onExport={() =>
+                          exportCsv(accountId, "first-to-second-matrix", audienceId)
+                        }
+                      />
+                    )}
+                  />
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <OrderCountDistribution
-                  data={pickAudienceSlice(
-                    data.cohortAnalytics.orderCountDistribution,
-                    selectedAudienceId
-                  )}
-                  onExport={() =>
-                    exportCsv(accountId, "order-count-distribution", selectedAudienceId)
-                  }
-                />
-                <DiscountCodeUsage
-                  data={pickAudienceSlice(
-                    data.cohortAnalytics.discountCodeUsage,
-                    selectedAudienceId
-                  )}
-                  onExport={() =>
-                    exportCsv(accountId, "discount-code-usage", selectedAudienceId)
-                  }
-                />
-              </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <MetricStack
+                      label="Order count & AOV"
+                      audienceIds={selectedAudienceIds}
+                      audienceLabels={data.cohortAnalytics.audienceLabels}
+                      result={data.cohortAnalytics.orderCountDistribution}
+                      render={(slice, audienceId) => (
+                        <OrderCountDistribution
+                          data={slice}
+                          onExport={() =>
+                            exportCsv(accountId, "order-count-distribution", audienceId)
+                          }
+                        />
+                      )}
+                    />
+
+                    <MetricStack
+                      label="Discount code usage"
+                      audienceIds={selectedAudienceIds}
+                      audienceLabels={data.cohortAnalytics.audienceLabels}
+                      result={data.cohortAnalytics.discountCodeUsage}
+                      render={(slice, audienceId) => (
+                        <DiscountCodeUsage
+                          data={slice}
+                          onExport={() =>
+                            exportCsv(accountId, "discount-code-usage", audienceId)
+                          }
+                        />
+                      )}
+                    />
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>
