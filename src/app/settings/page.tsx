@@ -590,11 +590,15 @@ function AudienceRow({
           className="w-full px-3 py-2 text-sm rounded border border-[var(--card-border)] bg-[var(--background)] focus:outline-none focus:border-[var(--accent)]"
         >
           <option value="">Select a list…</option>
-          {discovery?.lists.map((l) => (
-            <option key={l.id} value={l.id}>
-              {l.name} ({l.profileCount.toLocaleString()})
-            </option>
-          ))}
+          {discovery?.lists
+            .slice()
+            .sort((a, b) => (b.profileCount || 0) - (a.profileCount || 0))
+            .map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+                {l.profileCount > 0 ? ` · ${l.profileCount.toLocaleString()} profiles` : ""}
+              </option>
+            ))}
         </select>
       )}
 
@@ -607,11 +611,15 @@ function AudienceRow({
           className="w-full px-3 py-2 text-sm rounded border border-[var(--card-border)] bg-[var(--background)] focus:outline-none focus:border-[var(--accent)]"
         >
           <option value="">Select a segment…</option>
-          {discovery?.klaviyoSegments.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name} ({s.profileCount.toLocaleString()})
-            </option>
-          ))}
+          {discovery?.klaviyoSegments
+            .slice()
+            .sort((a, b) => (b.profileCount || 0) - (a.profileCount || 0))
+            .map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+                {s.profileCount > 0 ? ` · ${s.profileCount.toLocaleString()} profiles` : ""}
+              </option>
+            ))}
         </select>
       )}
 

@@ -204,11 +204,17 @@ export default function SegmentCreator({ accountId, onCreated, onClose }: Segmen
                     className="w-full px-3 py-2 text-sm rounded-lg border border-[var(--card-border)] bg-[var(--background)] text-[var(--foreground)]"
                   >
                     <option value="">Select a list...</option>
-                    {discovery?.lists?.map((l) => (
-                      <option key={l.id} value={l.id}>
-                        {l.name} ({l.profileCount.toLocaleString()} profiles)
-                      </option>
-                    ))}
+                    {discovery?.lists
+                      ?.slice()
+                      .sort((a, b) => (b.profileCount || 0) - (a.profileCount || 0))
+                      .map((l) => (
+                        <option key={l.id} value={l.id}>
+                          {l.name}
+                          {l.profileCount > 0
+                            ? ` · ${l.profileCount.toLocaleString()} profiles`
+                            : ""}
+                        </option>
+                      ))}
                   </select>
                   <div className="flex gap-2">
                     <button
@@ -243,11 +249,17 @@ export default function SegmentCreator({ accountId, onCreated, onClose }: Segmen
                     className="w-full px-3 py-2 text-sm rounded-lg border border-[var(--card-border)] bg-[var(--background)] text-[var(--foreground)]"
                   >
                     <option value="">Select a segment...</option>
-                    {discovery?.klaviyoSegments?.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name} ({s.profileCount.toLocaleString()} profiles)
-                      </option>
-                    ))}
+                    {discovery?.klaviyoSegments
+                      ?.slice()
+                      .sort((a, b) => (b.profileCount || 0) - (a.profileCount || 0))
+                      .map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                          {s.profileCount > 0
+                            ? ` · ${s.profileCount.toLocaleString()} profiles`
+                            : ""}
+                        </option>
+                      ))}
                   </select>
                   <div className="flex gap-2">
                     <button
