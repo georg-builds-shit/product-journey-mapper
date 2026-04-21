@@ -196,6 +196,12 @@ export const brandConfigs = pgTable(
     minOrderValue: real("min_order_value").notNull().default(0.01),
     // Optional SegmentRule[] for test-order exclusion (e.g., email contains "test@")
     excludeTestRules: jsonb("exclude_test_rules").notNull().default([]),
+    // Cached Klaviyo list + segment profile_count values, keyed by id.
+    // Shape: { lists: { id: { profileCount, name, fetchedAt } }, segments: {...} }
+    // Refreshed per /api/segments/discover call when TTL expires (see klaviyo.ts).
+    // Lets the settings page load instantly on repeat visits instead of hitting
+    // Klaviyo's tight single-object additional-fields rate limit.
+    klaviyoCacheJson: jsonb("klaviyo_cache_json"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },

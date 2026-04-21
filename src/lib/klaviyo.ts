@@ -366,6 +366,13 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+/** Shared shape for Klaviyo list or segment entries (after count enrichment). */
+export interface KlaviyoListOrSegment {
+  id: string;
+  name: string;
+  profileCount: number;
+}
+
 // Fetch all Klaviyo lists.
 //
 // profile_count is NOT available on the list-endpoint response at revision
