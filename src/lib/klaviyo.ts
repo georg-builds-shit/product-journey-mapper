@@ -333,78 +333,122 @@ export async function fetchEventsByMetricIds(
 }
 
 // Fetch all Klaviyo lists.
-// profile_count is an "additional-field" — must be opted in explicitly.
-// Default page size is 20; bumping to 100 so big accounts paginate faster.
+//
+// profile_count is NOT available on the list-endpoint response at revision
+// 2025-01-15 (removed in newer revisions). We paginate with the default page
+// size for names/ids, then fan out single-GET requests with
+// `additional-fields[list]=profile_count` to enrich each entry in parallel.
+// Klaviyo's 75 req/s baseline rate limit comfortably absorbs this.
 export async function fetchLists(
   accessToken: string
 ): Promise<Array<{ id: string; name: string; profileCount: number }>> {
-  const lists: Array<{ id: string; name: string; profileCount: number }> = [];
-  let nextUrl: string | null =
-    "https://a.klaviyo.com/api/lists/?page%5Bsize%5D=100&additional-fields%5Blist%5D=profile_count";
+  const basics: Array<{ id: string; name: string }> = [];
+  let nextUrl: string | null = "https://a.klaviyo.com/api/lists/";
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    revision: "2025-01-15",
+    Accept: "application/json",
+  };
 
   while (nextUrl) {
-    const res = await fetchWithRetry(nextUrl, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        revision: "2025-01-15",
-        Accept: "application/json",
-      },
-    });
-
+    const res = await fetchWithRetry(nextUrl, { headers });
     if (!res.ok) {
       const errBody = await res.text();
-      console.error(`Klaviyo lists fetch failed: ${res.status} — ${errBody}`);
+      console.error(`Klaviyo lists page fetch failed: ${res.status} — ${errBody}`);
       break;
     }
     const body = await res.json();
     for (const l of body.data || []) {
-      lists.push({
-        id: l.id,
-        name: l.attributes?.name || "Unnamed",
-        profileCount: l.attributes?.profile_count ?? l.attributes?.member_count ?? 0,
-      });
+      basics.push({ id: l.id, name: l.attributes?.name || "Unnamed" });
     }
     nextUrl = body.links?.next || null;
   }
 
-  return lists;
+  const enriched = await Promise.all(
+    basics.map(async (l) => ({
+      ...l,
+      profileCount: await fetchListProfileCount(accessToken, l.id),
+    }))
+  );
+
+  return enriched;
 }
 
-// Fetch all Klaviyo segments (their segments, not ours).
-// Same treatment: request profile_count as an additional field + page[size]=100.
+// Fetch all Klaviyo segments (their segments, not ours). Same enrichment
+// pattern as fetchLists — single-GET with additional-fields to get counts.
 export async function fetchKlaviyoSegments(
   accessToken: string
 ): Promise<Array<{ id: string; name: string; profileCount: number }>> {
-  const segments: Array<{ id: string; name: string; profileCount: number }> = [];
-  let nextUrl: string | null =
-    "https://a.klaviyo.com/api/segments/?page%5Bsize%5D=100&additional-fields%5Bsegment%5D=profile_count";
+  const basics: Array<{ id: string; name: string }> = [];
+  let nextUrl: string | null = "https://a.klaviyo.com/api/segments/";
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    revision: "2025-01-15",
+    Accept: "application/json",
+  };
 
   while (nextUrl) {
-    const res = await fetchWithRetry(nextUrl, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        revision: "2025-01-15",
-        Accept: "application/json",
-      },
-    });
-
+    const res = await fetchWithRetry(nextUrl, { headers });
     if (!res.ok) {
       const errBody = await res.text();
-      console.error(`Klaviyo segments fetch failed: ${res.status} — ${errBody}`);
+      console.error(`Klaviyo segments page fetch failed: ${res.status} — ${errBody}`);
       break;
     }
     const body = await res.json();
     for (const s of body.data || []) {
-      segments.push({
-        id: s.id,
-        name: s.attributes?.name || "Unnamed",
-        profileCount: s.attributes?.profile_count ?? 0,
-      });
+      basics.push({ id: s.id, name: s.attributes?.name || "Unnamed" });
     }
     nextUrl = body.links?.next || null;
   }
 
-  return segments;
+  const enriched = await Promise.all(
+    basics.map(async (s) => ({
+      ...s,
+      profileCount: await fetchSegmentProfileCount(accessToken, s.id),
+    }))
+  );
+
+  return enriched;
+}
+
+async function fetchListProfileCount(accessToken: string, listId: string): Promise<number> {
+  try {
+    const res = await fetchWithRetry(
+      `https://a.klaviyo.com/api/lists/${listId}/?additional-fields%5Blist%5D=profile_count`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          revision: "2025-01-15",
+          Accept: "application/json",
+        },
+      }
+    );
+    if (!res.ok) return 0;
+    const body = await res.json();
+    return Number(body.data?.attributes?.profile_count ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+async function fetchSegmentProfileCount(accessToken: string, segmentId: string): Promise<number> {
+  try {
+    const res = await fetchWithRetry(
+      `https://a.klaviyo.com/api/segments/${segmentId}/?additional-fields%5Bsegment%5D=profile_count`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          revision: "2025-01-15",
+          Accept: "application/json",
+        },
+      }
+    );
+    if (!res.ok) return 0;
+    const body = await res.json();
+    return Number(body.data?.attributes?.profile_count ?? 0);
+  } catch {
+    return 0;
+  }
 }
 
 // Fetch profile IDs belonging to a specific list or segment
