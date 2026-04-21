@@ -162,6 +162,31 @@ body {
   }
 }
 
+/* Chat panel animation */
+.chat-panel-active {
+  animation: chatSlideUp 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@keyframes chatSlideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Streaming cursor blink */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+.streaming-cursor {
+  animation: blink 1s infinite;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
