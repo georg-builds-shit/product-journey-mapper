@@ -332,13 +332,40 @@ export async function fetchEventsByMetricIds(
   return allEvents;
 }
 
+// Cap on concurrent Klaviyo enrichment requests. Klaviyo's baseline is 75
+// req/s; firing ~55 in parallel works "most of the time" but several get
+// 429'd during the burst and then retry simultaneously, stampeding again.
+// 8-at-a-time keeps us comfortably under the burst limit and lets retries
+// succeed deterministically.
+const ENRICHMENT_CONCURRENCY = 8;
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, worker);
+  await Promise.all(workers);
+  return results;
+}
+
 // Fetch all Klaviyo lists.
 //
 // profile_count is NOT available on the list-endpoint response at revision
-// 2025-01-15 (removed in newer revisions). We paginate with the default page
-// size for names/ids, then fan out single-GET requests with
-// `additional-fields[list]=profile_count` to enrich each entry in parallel.
-// Klaviyo's 75 req/s baseline rate limit comfortably absorbs this.
+// 2025-01-15 (removed in newer revisions). We paginate for names/ids, then
+// fan out single-GETs with `additional-fields[list]=profile_count` to
+// enrich each entry, capped to ENRICHMENT_CONCURRENCY at a time.
 export async function fetchLists(
   accessToken: string
 ): Promise<Array<{ id: string; name: string; profileCount: number }>> {
@@ -364,18 +391,14 @@ export async function fetchLists(
     nextUrl = body.links?.next || null;
   }
 
-  const enriched = await Promise.all(
-    basics.map(async (l) => ({
-      ...l,
-      profileCount: await fetchListProfileCount(accessToken, l.id),
-    }))
-  );
-
-  return enriched;
+  return mapWithConcurrency(basics, ENRICHMENT_CONCURRENCY, async (l) => ({
+    ...l,
+    profileCount: await fetchListProfileCount(accessToken, l.id),
+  }));
 }
 
 // Fetch all Klaviyo segments (their segments, not ours). Same enrichment
-// pattern as fetchLists — single-GET with additional-fields to get counts.
+// pattern as fetchLists.
 export async function fetchKlaviyoSegments(
   accessToken: string
 ): Promise<Array<{ id: string; name: string; profileCount: number }>> {
@@ -401,14 +424,10 @@ export async function fetchKlaviyoSegments(
     nextUrl = body.links?.next || null;
   }
 
-  const enriched = await Promise.all(
-    basics.map(async (s) => ({
-      ...s,
-      profileCount: await fetchSegmentProfileCount(accessToken, s.id),
-    }))
-  );
-
-  return enriched;
+  return mapWithConcurrency(basics, ENRICHMENT_CONCURRENCY, async (s) => ({
+    ...s,
+    profileCount: await fetchSegmentProfileCount(accessToken, s.id),
+  }));
 }
 
 async function fetchListProfileCount(accessToken: string, listId: string): Promise<number> {
