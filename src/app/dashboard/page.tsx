@@ -20,6 +20,7 @@ import FirstToSecondMatrix from "@/components/FirstToSecondMatrix";
 import OrderCountDistribution from "@/components/OrderCountDistribution";
 import DiscountCodeUsage from "@/components/DiscountCodeUsage";
 import CrossAudienceTile from "@/components/CrossAudienceTile";
+import AudienceOverview from "@/components/AudienceOverview";
 import ConnectionStatus from "@/components/ConnectionStatus";
 import { ChatButton, ChatPanel } from "@/components/chat";
 import { useChat } from "@/hooks/useChat";
@@ -135,7 +136,7 @@ function MetricStack<T>({
               </span>
               {n !== undefined && (
                 <span className="text-[10px] text-[var(--muted)] tabular-nums">
-                  n={n.toLocaleString()}
+                  {n.toLocaleString()} customers
                 </span>
               )}
             </div>
@@ -736,6 +737,13 @@ function DashboardContent() {
                   </p>
                 </div>
               )}
+
+              {/* Per-audience breakdown */}
+              <AudienceOverview
+                audienceLabels={data.cohortAnalytics.audienceLabels}
+                cohortCurves={data.cohortAnalytics.cohortCurves}
+                crossAudience={data.cohortAnalytics.crossAudience}
+              />
 
               {/* Top tiles: cross-audience + unassigned visibility */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -114,7 +114,7 @@ export default function AudienceMultiSelect({
                   <span className="flex-1">{a.label}</span>
                   {a.count !== undefined && (
                     <span className="text-[10px] text-[var(--muted)] tabular-nums">
-                      n={a.count.toLocaleString()}
+                      {a.count.toLocaleString()}
                     </span>
                   )}
                 </label>
