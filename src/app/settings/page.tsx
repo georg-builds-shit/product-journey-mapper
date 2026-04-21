@@ -228,25 +228,39 @@ function SettingsContent() {
             + Add audience
           </button>
         </div>
-        <div className="text-xs text-[var(--muted)] space-y-1 mb-4">
+        <div className="text-xs text-[var(--muted)] space-y-2 mb-4">
           <p>
-            An audience is a named group of customers (e.g. <em>DTC</em>, <em>Affiliate</em>,{" "}
-            <em>B2B</em>). Every metric on the Cohorts tab gets split by audience, so you can
+            An audience is a named group of customers — e.g. <em>DTC</em>, <em>Affiliate</em>,{" "}
+            <em>B2B</em>. Every metric on the Cohorts tab gets split by audience, so you can
             compare repeat rates, time-between-orders, and product paths across them.
           </p>
           <p>
+            <strong className="text-[var(--foreground)]">
+              Add one audience per group you want to see separately.
+            </strong>{" "}
+            Want to compare Affiliate vs DTC? Add two audiences — label them <em>Affiliate</em>{" "}
+            and <em>DTC</em>, pick the Klaviyo segment (or list) that defines each. The Cohorts
+            tab will let you switch between them.
+          </p>
+          <p>
             <strong className="text-[var(--foreground)]">First match wins.</strong> Customers are
-            assigned to the first audience they match in this order — so put narrower audiences
+            assigned to the first audience they match in this order — so put narrower groups
             (e.g. VIP) above broader ones (e.g. DTC). Anyone matching none shows up as{" "}
             <em>Unassigned</em>.
           </p>
         </div>
 
         {config.audiences.length === 0 && (
-          <p className="text-sm text-[var(--muted)] italic">
-            No audiences yet. Add at least one to unlock per-audience charts. Without audiences,
-            every customer lands in Unassigned and charts only show the Combined view.
-          </p>
+          <div className="rounded-lg border border-dashed border-[var(--card-border)] p-4 mb-3">
+            <p className="text-sm text-[var(--muted)] mb-2">
+              <strong className="text-[var(--foreground)]">No audiences yet.</strong> Add at
+              least one to unlock per-audience charts.
+            </p>
+            <p className="text-xs text-[var(--muted)]">
+              Most brands start with 2–3: one per sales channel (DTC, Affiliate, Wholesale). Each
+              audience = one Klaviyo segment or list.
+            </p>
+          </div>
         )}
 
         <div className="space-y-3">
