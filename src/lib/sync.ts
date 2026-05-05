@@ -11,6 +11,7 @@ import {
   type OrderedProductEvent,
 } from "./klaviyo";
 import { getBrandConfig } from "./config";
+import { log } from "./logger";
 
 export interface SyncResult {
   newEvents: number;
@@ -51,7 +52,7 @@ export async function syncEvents(
       const config = await getBrandConfig(accountId);
       lookbackMonths = config.lookbackMonths;
     } catch (err) {
-      console.warn("Could not load brand config, using default lookback:", err);
+      log.warn("sync.brand_config_load_failed", { accountId }, err);
     }
 
     // ── Step 1: Sync events ──

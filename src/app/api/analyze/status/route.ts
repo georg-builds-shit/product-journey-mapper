@@ -2,8 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { analysisRuns } from "@/db/schema";
 import { eq, and, desc, isNull } from "drizzle-orm";
+import { requireAuth } from "@/lib/auth";
 
 export async function GET(request: NextRequest) {
+  const authError = requireAuth(request);
+  if (authError) return authError;
+
   const accountId = request.nextUrl.searchParams.get("accountId");
   const segmentId = request.nextUrl.searchParams.get("segmentId");
   const runId = request.nextUrl.searchParams.get("runId");

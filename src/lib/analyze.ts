@@ -9,6 +9,7 @@ import {
 } from "@/db/schema";
 import { eq, and, gte, lte, inArray } from "drizzle-orm";
 import { fetchProfiles, fetchListOrSegmentProfileIds } from "./klaviyo";
+import { log } from "./logger";
 import {
   buildOrderSequences,
   buildTransitionMatrix,
@@ -99,13 +100,32 @@ export async function runJourneyAnalysis(
       );
     }
 
-    const dbEvents = await db
-      .select()
-      .from(events)
-      .where(and(...conditions));
-
-    // Convert DB rows to OrderedProductEvent format
-    let eventList: OrderedProductEvent[] = dbEvents.map((e) => ({
+    // Inline select → map so the raw DB rows are GC'd as soon as the
+    // OrderedProductEvent array is built. Only select the columns we need
+    // (drops createdAt + id from the wire, ~10% smaller row). For true
+    // streaming we'd need to rewrite buildOrderSequences + cohort metrics
+    // to accept an async iterable — out of scope here, but logged as a
+    // warning when counts cross 250k so we notice before OOM.
+    let eventList: OrderedProductEvent[] = (
+      await db
+        .select({
+          klaviyoEventId: events.klaviyoEventId,
+          profileId: events.profileId,
+          datetime: events.datetime,
+          value: events.value,
+          productName: events.productName,
+          productId: events.productId,
+          categories: events.categories,
+          productType: events.productType,
+          brand: events.brand,
+          quantity: events.quantity,
+          orderId: events.orderId,
+          sku: events.sku,
+          discountCode: events.discountCode,
+        })
+        .from(events)
+        .where(and(...conditions))
+    ).map((e) => ({
       id: e.klaviyoEventId,
       profileId: e.profileId,
       datetime: e.datetime.toISOString(),
@@ -120,6 +140,21 @@ export async function runJourneyAnalysis(
       sku: e.sku || null,
       discountCode: e.discountCode || null,
     }));
+
+    log.info("analyze.events_loaded", {
+      accountId,
+      runId,
+      eventCount: eventList.length,
+    });
+    if (eventList.length > 250_000) {
+      log.warn("analyze.event_count_high", {
+        accountId,
+        runId,
+        eventCount: eventList.length,
+        threshold: 250_000,
+        note: "Approaching memory ceiling — refactor to streaming before 500k",
+      });
+    }
 
     // Apply profile segment filter if applicable
     if (segment?.segmentType === "profile" && eventList.length > 0) {
@@ -398,7 +433,7 @@ export async function runJourneyAnalysis(
             if (p && !p.listIds.includes(listId)) p.listIds.push(listId);
           }
         } catch (err) {
-          console.error(`List membership fetch failed for ${listId}:`, err);
+          log.error("analyze.list_membership_fetch_failed", { accountId, listId }, err);
         }
       }
       for (const segId of allSegmentIds) {
@@ -410,7 +445,7 @@ export async function runJourneyAnalysis(
             if (p && !p.segmentIds.includes(segId)) p.segmentIds.push(segId);
           }
         } catch (err) {
-          console.error(`Segment membership fetch failed for ${segId}:`, err);
+          log.error("analyze.segment_membership_fetch_failed", { accountId, segmentId: segId }, err);
         }
       }
 
@@ -450,7 +485,7 @@ export async function runJourneyAnalysis(
         families: config.productFamilies,
       });
     } catch (err) {
-      console.error("Cohort analytics computation failed:", err);
+      log.error("analyze.cohort_computation_failed", { accountId, runId }, err);
       cohortAnalytics = null;
     }
 
@@ -459,7 +494,7 @@ export async function runJourneyAnalysis(
     try {
       insights = await generateJourneyInsights(transitions, gateways, stats);
     } catch (insightsError) {
-      console.error("AI insights generation failed:", insightsError);
+      log.error("analyze.insights_failed", { accountId, runId }, insightsError);
       insights =
         "AI insights could not be generated at this time. All other analytics are available below.";
     }

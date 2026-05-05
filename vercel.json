@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/refresh-tokens",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/prewarm-klaviyo-cache",
+      "schedule": "0 2 * * *"
+    }
+  ]
+}

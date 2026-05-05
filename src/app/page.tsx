@@ -2,10 +2,13 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useAuth, UserButton } from "@clerk/nextjs";
+import Link from "next/link";
 
 export default function Home() {
   const router = useRouter();
   const [demoLoading, setDemoLoading] = useState(false);
+  const { isLoaded, isSignedIn } = useAuth();
 
   const handleDemo = async () => {
     setDemoLoading(true);
@@ -25,6 +28,37 @@ export default function Home() {
       {/* Subtle gradient background */}
       <div className="absolute inset-0 bg-gradient-to-b from-[var(--accent)]/[0.04] via-transparent to-transparent pointer-events-none" />
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-[var(--accent)]/[0.03] rounded-full blur-3xl pointer-events-none" />
+
+      {/* Top-right auth controls */}
+      <div className="absolute top-4 right-4 flex items-center gap-3 z-20">
+        {isLoaded && isSignedIn && (
+          <>
+            <Link
+              href="/dashboard"
+              className="text-sm text-[var(--muted)] hover:text-[var(--foreground)] transition-colors"
+            >
+              Dashboard
+            </Link>
+            <UserButton />
+          </>
+        )}
+        {isLoaded && !isSignedIn && (
+          <>
+            <Link
+              href="/sign-in"
+              className="text-sm text-[var(--muted)] hover:text-[var(--foreground)] transition-colors"
+            >
+              Sign in
+            </Link>
+            <Link
+              href="/sign-up"
+              className="text-sm px-3 py-1.5 rounded-md border border-[var(--card-border)] hover:border-[var(--accent)]/50 transition-colors"
+            >
+              Sign up
+            </Link>
+          </>
+        )}
+      </div>
 
       <div className="max-w-2xl mx-auto px-6 py-24 text-center relative z-10">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[var(--accent-soft)] text-[var(--accent)] text-xs font-medium mb-6">

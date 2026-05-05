@@ -5,6 +5,8 @@ import { eq, and, desc, inArray } from "drizzle-orm";
 import { inngest } from "@/lib/inngest";
 import { requireAuth } from "@/lib/auth";
 import { getBrandConfig } from "@/lib/config";
+import { consumeAnalyzeQuota } from "@/lib/quota";
+import { log } from "@/lib/logger";
 
 export async function POST(request: NextRequest) {
   const authError = requireAuth(request);
@@ -112,6 +114,22 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Per-account quota check. Atomically increments the counter on success;
+  // returns 429 when the plan's monthly analyze cap is hit. See src/lib/quota.ts.
+  const quota = await consumeAnalyzeQuota(accountId);
+  if (!quota.ok) {
+    log.warn("analyze.quota_blocked", { accountId, plan: quota.plan, limit: quota.limit });
+    return NextResponse.json(
+      {
+        error: "Monthly analyze quota exceeded",
+        plan: quota.plan,
+        limit: quota.limit,
+        count: quota.count,
+      },
+      { status: 429 }
+    );
+  }
+
   const filters: any = {};
   if (dateFrom) filters.dateFrom = dateFrom;
   if (dateTo) filters.dateTo = dateTo;
@@ -120,16 +138,51 @@ export async function POST(request: NextRequest) {
   // Create the run row synchronously so the client gets a runId it can poll.
   // Without this the status endpoint has no way to distinguish "new run queued"
   // from "previous run already complete" and the dashboard shows stale data.
-  const [run] = await db
-    .insert(analysisRuns)
-    .values({
+  //
+  // The partial unique index `analysis_runs_account_in_progress_idx` ensures
+  // at most one in-progress run per account, so a double-click race that
+  // slipped past the check above fails here with a 23505 unique violation.
+  // In that case the other request already won — return its runId.
+  let run: { id: string };
+  try {
+    const inserted = await db
+      .insert(analysisRuns)
+      .values({
+        accountId: account.id,
+        status: "pending",
+        filterDateFrom,
+        filterDateTo,
+        segmentId: segmentId || null,
+      })
+      .returning();
+    run = inserted[0];
+  } catch (err: unknown) {
+    const code = (err as { code?: string; cause?: { code?: string } })?.code
+      ?? (err as { cause?: { code?: string } })?.cause?.code;
+    if (code !== "23505") throw err;
+    const [winner] = await db
+      .select()
+      .from(analysisRuns)
+      .where(
+        and(
+          eq(analysisRuns.accountId, accountId),
+          inArray(analysisRuns.status, ["pending", "ingesting", "analyzing"])
+        )
+      )
+      .orderBy(desc(analysisRuns.createdAt))
+      .limit(1);
+    if (!winner) {
+      return NextResponse.json(
+        { error: "Conflicting run could not be resolved" },
+        { status: 409 }
+      );
+    }
+    return NextResponse.json({
+      status: "in_progress",
       accountId: account.id,
-      status: "pending",
-      filterDateFrom,
-      filterDateTo,
-      segmentId: segmentId || null,
-    })
-    .returning();
+      runId: winner.id,
+    });
+  }
 
   await inngest.send({
     name: "journey/analyze",

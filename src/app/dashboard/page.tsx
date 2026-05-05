@@ -1,6 +1,6 @@
 "use client";
 
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState, useCallback, useRef, Suspense } from "react";
 import SankeyChart from "@/components/SankeyChart";
 import GatewayChart from "@/components/GatewayChart";
@@ -53,6 +53,13 @@ interface DashboardData {
   cohortAnalytics: CohortAnalytics | null;
   audiencesSnapshot: any[] | null;
   configSnapshot: any | null;
+  /**
+   * Statistical-significance threshold the API applied to rate-based product
+   * metrics (stickiness, repurchase, gateway). UI uses it for the footnote
+   * and empty-state copy. Optional so older deployments without the field
+   * still type-check.
+   */
+  significance?: { minSampleSize: number } | null;
 }
 
 // Shape mirrors CohortAnalyticsOutput in src/lib/cohort-analysis.ts
@@ -213,6 +220,54 @@ function CompareStatCard({
   );
 }
 
+/**
+ * Resolves the caller's accountId from the signed-in Clerk org and
+ * replaces the URL with ?accountId=X. If the org has no Klaviyo-connected
+ * account yet, redirects home so the user can kick off the Connect flow.
+ */
+function AccountResolver() {
+  const router = useRouter();
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/account/resolve");
+        if (res.status === 401) {
+          router.replace("/sign-in");
+          return;
+        }
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.accountId) {
+          router.replace(`/dashboard?accountId=${data.accountId}`);
+        } else {
+          setError("Your organization doesn't have a Klaviyo-connected account yet.");
+        }
+      } catch {
+        if (!cancelled) setError("Could not resolve account. Try again.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
+  return (
+    <div className="flex-1 flex items-center justify-center">
+      {error ? (
+        <p className="text-[var(--muted)]">
+          {error}{" "}
+          <a href="/" className="text-[var(--accent)] hover:underline">Connect Klaviyo</a>
+        </p>
+      ) : (
+        <p className="text-[var(--muted)]">Loading your dashboard…</p>
+      )}
+    </div>
+  );
+}
+
 /** Auth header for API calls */
 function apiHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...extra };
@@ -226,17 +281,36 @@ function apiHeaders(extra?: Record<string, string>): Record<string, string> {
 /**
  * Trigger a CSV download from the export API. Uses the latest completed run
  * implicitly (the API resolves `runId` from `accountId` when omitted).
+ *
+ * Fetches with the auth header and synthesizes a download — we can't set
+ * headers on `window.open`, and the server no longer accepts apiKey as a
+ * query param (leaks via referrer / history / logs).
  */
-function exportCsv(accountId: string | null, metric: string, audienceId: string) {
+async function exportCsv(accountId: string | null, metric: string, audienceId: string) {
   if (!accountId) return;
   const params = new URLSearchParams({ accountId, metric });
   if (audienceId && audienceId !== "__combined__") params.set("audience", audienceId);
-  const secret = typeof window !== "undefined"
-    ? process.env.NEXT_PUBLIC_APP_SECRET
-    : undefined;
-  if (secret) params.set("apiKey", secret);
-  // Open in a new tab so the browser handles the download via Content-Disposition.
-  window.open(`/api/export?${params.toString()}`, "_blank");
+
+  const res = await fetch(`/api/export?${params.toString()}`, {
+    headers: apiHeaders(),
+  });
+  if (!res.ok) {
+    console.error("CSV export failed", res.status, await res.text());
+    return;
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get("content-disposition") || "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  const filename = match ? match[1] : `${metric}.csv`;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /**
@@ -471,14 +545,7 @@ function DashboardContent() {
   };
 
   if (!accountId) {
-    return (
-      <div className="flex-1 flex items-center justify-center">
-        <p className="text-[var(--muted)]">
-          No account connected.{" "}
-          <a href="/" className="text-[var(--accent)] hover:underline">Go back</a>
-        </p>
-      </div>
-    );
+    return <AccountResolver />;
   }
 
   if (loading && status?.status !== "failed") {
@@ -867,7 +934,13 @@ function DashboardContent() {
       {/* Products */}
       {activeTab === "products" && (
         <div className="space-y-6">
-          {data.stickiness && data.stickiness.length > 0 && <StickinessTable data={data.stickiness} />}
+          {/* Render the StickinessTable even when empty so the user sees the
+              "not enough data" message (with the buyer-count threshold) instead
+              of a silently missing section. */}
+          <StickinessTable
+            data={data.stickiness || []}
+            minSampleSize={data.significance?.minSampleSize}
+          />
           {data.productAffinity && data.productAffinity.length > 0 && <AffinityMatrix data={data.productAffinity} />}
         </div>
       )}

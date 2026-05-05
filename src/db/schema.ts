@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   text,
@@ -9,9 +10,59 @@ import {
   boolean,
   uniqueIndex,
   index,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 
-// Accounts that connected their Klaviyo
+// Shadow of Clerk users. Upserted via Clerk webhooks (user.created, user.updated).
+// PK is Clerk's user_id (text) so we never have to translate IDs.
+export const users = pgTable(
+  "users",
+  {
+    id: text("id").primaryKey(), // Clerk user_id e.g. "user_2abc..."
+    email: text("email").notNull(),
+    name: text("name"),
+    imageUrl: text("image_url"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [index("users_email_idx").on(table.email)]
+);
+
+// Shadow of Clerk organizations. One Clerk org = one PJM workspace.
+export const organizations = pgTable(
+  "organizations",
+  {
+    id: text("id").primaryKey(), // Clerk org_id e.g. "org_2abc..."
+    name: text("name").notNull(),
+    slug: text("slug"),
+    imageUrl: text("image_url"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("organizations_slug_idx").on(table.slug)]
+);
+
+// Clerk's role info, mirrored locally for RLS and JOIN queries.
+export const organizationMembers = pgTable(
+  "organization_members",
+  {
+    organizationId: text("organization_id")
+      .references(() => organizations.id, { onDelete: "cascade" })
+      .notNull(),
+    userId: text("user_id")
+      .references(() => users.id, { onDelete: "cascade" })
+      .notNull(),
+    role: text("role").notNull().default("basic_member"), // "admin" | "basic_member"
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.userId] }),
+    index("organization_members_user_idx").on(table.userId),
+  ]
+);
+
+// Accounts that connected their Klaviyo. An account belongs to one organization
+// (agencies managing multiple brands = one org with multiple accounts).
 export const accounts = pgTable("accounts", {
   id: uuid("id").defaultRandom().primaryKey(),
   email: text("email").notNull(),
@@ -19,6 +70,19 @@ export const accounts = pgTable("accounts", {
   klaviyoRefreshToken: text("klaviyo_refresh_token").notNull(),
   klaviyoTokenExpiresAt: timestamp("klaviyo_token_expires_at").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  // Nullable during Clerk rollout — legacy accounts get backfilled later.
+  organizationId: text("organization_id").references(() => organizations.id, {
+    onDelete: "set null",
+  }),
+  // Billing + quota foundation. Values enforced in src/lib/quota.ts.
+  // Tiers: "free" | "pro" | "enterprise" | "demo". A null plan is treated
+  // as "free" for backwards compat with rows created before this column existed.
+  plan: text("plan").notNull().default("free"),
+  // Rolling-month analyze counter. Reset is lazy — the first call after
+  // analysisPeriodStart is >30d old resets the count to 1 and advances the
+  // window. See src/lib/quota.ts for the atomic update.
+  analysisCountMonth: integer("analysis_count_month").notNull().default(0),
+  analysisPeriodStart: timestamp("analysis_period_start").defaultNow().notNull(),
 });
 
 // Tracks each analysis execution
@@ -61,6 +125,11 @@ export const analysisRuns = pgTable("analysis_runs", {
 },
 (table) => [
   index("analysis_runs_account_status_idx").on(table.accountId, table.status, table.createdAt),
+  // Partial unique index: at most one in-progress run per account.
+  // Closes the check-then-insert race in POST /api/analyze.
+  uniqueIndex("analysis_runs_account_in_progress_idx")
+    .on(table.accountId)
+    .where(sql`status IN ('pending', 'ingesting', 'analyzing')`),
 ]);
 
 // User-defined segments for filtering and comparison
@@ -150,23 +219,30 @@ export const syncRuns = pgTable("sync_runs", {
 });
 
 // Product-to-product transitions across sequential orders
-export const productTransitions = pgTable("product_transitions", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  accountId: uuid("account_id")
-    .references(() => accounts.id, { onDelete: "cascade" })
-    .notNull(),
-  analysisRunId: uuid("analysis_run_id")
-    .references(() => analysisRuns.id, { onDelete: "cascade" })
-    .notNull(),
-  fromProduct: text("from_product").notNull(),
-  fromCategory: text("from_category"),
-  toProduct: text("to_product").notNull(),
-  toCategory: text("to_category"),
-  transitionCount: integer("transition_count").notNull(),
-  transitionPct: real("transition_pct").notNull(), // % of from_product buyers who then bought to_product
-  avgDaysBetween: real("avg_days_between"),
-  step: integer("step").notNull(), // 1→2, 2→3, etc.
-});
+export const productTransitions = pgTable(
+  "product_transitions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    accountId: uuid("account_id")
+      .references(() => accounts.id, { onDelete: "cascade" })
+      .notNull(),
+    analysisRunId: uuid("analysis_run_id")
+      .references(() => analysisRuns.id, { onDelete: "cascade" })
+      .notNull(),
+    fromProduct: text("from_product").notNull(),
+    fromCategory: text("from_category"),
+    toProduct: text("to_product").notNull(),
+    toCategory: text("to_category"),
+    transitionCount: integer("transition_count").notNull(),
+    transitionPct: real("transition_pct").notNull(), // % of from_product buyers who then bought to_product
+    avgDaysBetween: real("avg_days_between"),
+    step: integer("step").notNull(), // 1→2, 2→3, etc.
+  },
+  (table) => [
+    index("product_transitions_run_idx").on(table.analysisRunId),
+    index("product_transitions_account_idx").on(table.accountId),
+  ]
+);
 
 // Per-brand configuration for the cohort & repeat-purchase analytics module.
 // One row per account (account_id unique). Rules are stored inline rather
@@ -211,18 +287,25 @@ export const brandConfigs = pgTable(
 );
 
 // First-purchase products and their downstream impact
-export const gatewayProducts = pgTable("gateway_products", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  accountId: uuid("account_id")
-    .references(() => accounts.id, { onDelete: "cascade" })
-    .notNull(),
-  analysisRunId: uuid("analysis_run_id")
-    .references(() => analysisRuns.id, { onDelete: "cascade" })
-    .notNull(),
-  productName: text("product_name").notNull(),
-  category: text("category"),
-  firstPurchaseCount: integer("first_purchase_count").notNull(),
-  firstPurchasePct: real("first_purchase_pct").notNull(),
-  avgLtvAfter: real("avg_ltv_after"),
-  avgOrdersAfter: real("avg_orders_after"),
-});
+export const gatewayProducts = pgTable(
+  "gateway_products",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    accountId: uuid("account_id")
+      .references(() => accounts.id, { onDelete: "cascade" })
+      .notNull(),
+    analysisRunId: uuid("analysis_run_id")
+      .references(() => analysisRuns.id, { onDelete: "cascade" })
+      .notNull(),
+    productName: text("product_name").notNull(),
+    category: text("category"),
+    firstPurchaseCount: integer("first_purchase_count").notNull(),
+    firstPurchasePct: real("first_purchase_pct").notNull(),
+    avgLtvAfter: real("avg_ltv_after"),
+    avgOrdersAfter: real("avg_orders_after"),
+  },
+  (table) => [
+    index("gateway_products_run_idx").on(table.analysisRunId),
+    index("gateway_products_account_idx").on(table.accountId),
+  ]
+);

@@ -2,6 +2,7 @@ import { inngest } from "./inngest";
 import { runJourneyAnalysis, AnalysisFilters } from "./analyze";
 import { syncEvents } from "./sync";
 import { getFreshAccessToken } from "./klaviyo-auth";
+import { log } from "./logger";
 
 export const analyzeJourney = inngest.createFunction(
   {
@@ -22,17 +23,39 @@ export const analyzeJourney = inngest.createFunction(
     };
   }) => {
     const { accountId, runId, filters } = event.data;
+    const startedAt = Date.now();
 
-    // Refresh-aware token fetch — shared with /api/segments/discover and
-    // /api/config/sanity-check so all Klaviyo-calling paths get a fresh token.
-    const { accessToken } = await getFreshAccessToken(accountId);
+    log.info("analyze.job_started", { accountId, runId, filters });
 
-    // Step 1: Incremental sync — pull only new events from Klaviyo
-    const syncResult = await syncEvents(accountId, accessToken);
+    try {
+      const { accessToken } = await getFreshAccessToken(accountId);
 
-    // Step 2: Analyze the pre-created run row from the POST /api/analyze handler
-    await runJourneyAnalysis(accountId, accessToken, runId, filters);
-    return { runId, sync: syncResult };
+      const syncStartedAt = Date.now();
+      const syncResult = await syncEvents(accountId, accessToken);
+      log.info("analyze.sync_done", {
+        accountId,
+        runId,
+        newEvents: syncResult.newEvents,
+        backfillEvents: syncResult.backfillEvents,
+        totalEvents: syncResult.totalEvents,
+        profilesSynced: syncResult.profilesSynced,
+        durationMs: Date.now() - syncStartedAt,
+      });
+
+      const analyzeStartedAt = Date.now();
+      await runJourneyAnalysis(accountId, accessToken, runId, filters);
+      log.info("analyze.run_done", {
+        accountId,
+        runId,
+        durationMs: Date.now() - analyzeStartedAt,
+        totalMs: Date.now() - startedAt,
+      });
+
+      return { runId, sync: syncResult };
+    } catch (err) {
+      log.error("analyze.job_failed", { accountId, runId, totalMs: Date.now() - startedAt }, err);
+      throw err;
+    }
   }
 );
 

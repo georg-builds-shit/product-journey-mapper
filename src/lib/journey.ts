@@ -1,5 +1,38 @@
 import type { OrderedProductEvent } from "./klaviyo";
 
+/**
+ * Minimum unique buyers required before we surface a product's rate-based
+ * metric (stickiness, repurchase rate, gateway %). With fewer buyers the
+ * 95% confidence interval is too wide to draw conclusions — e.g. 100% from
+ * n=3 has a Wilson lower bound of ~44%, which is meaningless ranking signal.
+ *
+ * 50 was chosen as a practical floor: tight enough that the displayed rate
+ * is within ±~14pp of the true rate, loose enough that mid-size catalogs
+ * still produce a useful list. Tune via env var if needed later.
+ */
+export const MIN_SAMPLE_SIZE = 50;
+
+/**
+ * Wilson score interval lower bound at 95% confidence. Returns 0–1.
+ *
+ * Penalizes small samples without throwing them away: a product with 100%
+ * stickiness from 3 buyers scores ~0.44, while 95% from 500 buyers scores
+ * ~0.93. Sorting by this instead of the point estimate keeps high-confidence
+ * winners on top instead of small-sample noise.
+ *
+ * https://en.wikipedia.org/wiki/Binomial_proportion_confidence_interval#Wilson_score_interval
+ */
+export function wilsonLowerBound(successes: number, total: number): number {
+  if (total === 0) return 0;
+  const z = 1.96; // 95% CI
+  const z2 = z * z;
+  const phat = successes / total;
+  const denom = 1 + z2 / total;
+  const center = phat + z2 / (2 * total);
+  const margin = z * Math.sqrt((phat * (1 - phat) + z2 / (4 * total)) / total);
+  return Math.max(0, (center - margin) / denom);
+}
+
 // An order is a group of products bought in the same cart
 interface Order {
   orderId: string;
@@ -50,6 +83,12 @@ export interface StickinessResult {
   totalBuyers: number;
   buyersWhoReturnedForAny: number;
   stickinessRate: number; // % who placed another order (any product) after buying this
+  /**
+   * Wilson 95% CI lower bound on stickinessRate (0–100). Used as the sort key
+   * so small-sample products don't crowd the top of the table. Optional for
+   * backward compat with analysis runs created before this field existed.
+   */
+  wilsonLower?: number;
   avgDaysToReturn: number;
 }
 
@@ -244,6 +283,10 @@ export function findGatewayProducts(sequences: CustomerSequence[]): GatewayResul
 
   const results: GatewayResult[] = [];
   for (const [productName, data] of gateways) {
+    // Skip products that haven't been a first-purchase for at least 50 customers.
+    // Below that, the LTV-after average is too noisy to use for "where do
+    // first-time buyers come from" decisions.
+    if (data.count < MIN_SAMPLE_SIZE) continue;
     results.push({
       productName,
       category: data.category,
@@ -294,21 +337,31 @@ export function calculateStickiness(sequences: CustomerSequence[]): StickinessRe
 
   const results: StickinessResult[] = [];
   for (const [productName, stats] of productStats) {
-    if (stats.buyers.size < 3) continue; // skip products with very few buyers
+    // Hard floor: products with < 50 buyers don't produce trustworthy rates.
+    // 100% from n=3 is meaningless next to 60% from n=500.
+    if (stats.buyers.size < MIN_SAMPLE_SIZE) continue;
+    const total = stats.buyers.size;
+    const returned = stats.returnedBuyers.size;
     const avgDays = stats.returnDays.length > 0
       ? stats.returnDays.reduce((a, b) => a + b, 0) / stats.returnDays.length
       : 0;
     results.push({
       productName,
       category: stats.category,
-      totalBuyers: stats.buyers.size,
-      buyersWhoReturnedForAny: stats.returnedBuyers.size,
-      stickinessRate: (stats.returnedBuyers.size / stats.buyers.size) * 100,
+      totalBuyers: total,
+      buyersWhoReturnedForAny: returned,
+      stickinessRate: (returned / total) * 100,
+      wilsonLower: wilsonLowerBound(returned, total) * 100,
       avgDaysToReturn: Math.round(avgDays),
     });
   }
 
-  return results.sort((a, b) => b.stickinessRate - a.stickinessRate);
+  // Sort by Wilson lower bound (confidence-adjusted), not point estimate.
+  // Falls back to point estimate if wilsonLower is missing (shouldn't happen
+  // for new runs, but keeps sort stable if the field is ever stripped).
+  return results.sort(
+    (a, b) => (b.wilsonLower ?? b.stickinessRate) - (a.wilsonLower ?? a.stickinessRate)
+  );
 }
 
 /**
@@ -455,6 +508,8 @@ export interface RepurchaseRateResult {
   totalBuyers: number;
   sameProdRepeatBuyers: number;
   repurchaseRate: number; // % who bought the same product again
+  /** Wilson 95% CI lower bound on repurchaseRate (0–100). Sort key. */
+  wilsonLower?: number;
   avgRepurchaseDays: number;
 }
 
@@ -512,7 +567,9 @@ export function calculateRepurchaseRate(
 
   const results: RepurchaseRateResult[] = [];
   for (const [productName, stats] of productStats) {
-    if (stats.buyers.size < 3) continue;
+    if (stats.buyers.size < MIN_SAMPLE_SIZE) continue;
+    const total = stats.buyers.size;
+    const repeats = stats.repeatBuyers.size;
     const avgDays =
       stats.repeatDays.length > 0
         ? stats.repeatDays.reduce((a, b) => a + b, 0) / stats.repeatDays.length
@@ -520,14 +577,17 @@ export function calculateRepurchaseRate(
     results.push({
       productName,
       category: stats.category,
-      totalBuyers: stats.buyers.size,
-      sameProdRepeatBuyers: stats.repeatBuyers.size,
-      repurchaseRate: (stats.repeatBuyers.size / stats.buyers.size) * 100,
+      totalBuyers: total,
+      sameProdRepeatBuyers: repeats,
+      repurchaseRate: (repeats / total) * 100,
+      wilsonLower: wilsonLowerBound(repeats, total) * 100,
       avgRepurchaseDays: Math.round(avgDays),
     });
   }
 
-  return results.sort((a, b) => b.repurchaseRate - a.repurchaseRate);
+  return results.sort(
+    (a, b) => (b.wilsonLower ?? b.repurchaseRate) - (a.wilsonLower ?? a.repurchaseRate)
+  );
 }
 
 export interface CohortRow {
@@ -642,8 +702,11 @@ export function calculateProductAffinity(
   }
 
   const totalCustomers = sequences.length;
+  // Each product needs MIN_SAMPLE_SIZE buyers before it's eligible to appear
+  // in a pair — pairs from products with tiny buyer counts produce inflated
+  // lift values that mislead more than they help.
   const products = Array.from(productBuyers.keys()).filter(
-    (p) => (productBuyers.get(p)?.size || 0) >= 3
+    (p) => (productBuyers.get(p)?.size || 0) >= MIN_SAMPLE_SIZE
   );
 
   const results: ProductAffinityResult[] = [];
@@ -659,7 +722,10 @@ export function calculateProductAffinity(
         if (buyersB.has(buyer)) coPurchase++;
       }
 
-      if (coPurchase < 2) continue;
+      // Lift from <50 co-purchases is dominated by noise — a single quirky
+      // shopper can swing a pair to 10x lift. Require a real co-purchase
+      // base before reporting affinity.
+      if (coPurchase < MIN_SAMPLE_SIZE) continue;
 
       // Lift = P(A∩B) / (P(A) × P(B))
       const pA = buyersA.size / totalCustomers;
